@@ -11,6 +11,8 @@
   property to be set.
 * **Breaking Change!** Change the format for ZooKeeper hosts in the ZK storage
   config.
+* Add announcer support!  linkerd can now announce to service discovery backends!
+  * Add zk announcer.
 
 ## 0.5.0
 
