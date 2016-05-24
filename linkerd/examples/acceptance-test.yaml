@@ -52,8 +52,9 @@ routers:
     kind: io.l5d.retryableIdempotent5XX
   announcers:
   - kind: io.l5d.serversets
-    hosts:
-    - 127.0.0.1:2181
+    zkAddrs:
+    - host: 127.0.0.1
+      port: 2181
     pathPrefix: /discovery/prod
   client:
     loadBalancer:
