@@ -1,5 +1,8 @@
 ## x.x.x
 
+* New default JVM settings scale up with traffic levels.
+  * `JVM_HEAP` is now deprecated, you can now separately set `JVM_HEAP_MIN` and
+    `JVM_HEAP_MAX` but you shouldn't need to adjust them thanks to the new defaults.
 * Add announcer support! linkerd can now announce to service discovery backends!
   * Add zk announcer.
 
