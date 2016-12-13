@@ -35,8 +35,13 @@ case class CanaryAndServiceIdentifier(
       req.host match {
         case Some(host) if host.nonEmpty =>
           val tag = req.headerMap.get("x-cisco-spark-version-opts").getOrElse(
-                      req.headerMap.get("x-cisco-spark-canary-opts").getOrElse("disabled"))
-          val dst = mkPath(Path.Utf8("1.1", tag, host.split('.')(0)) ++ suffix(req))
+            req.headerMap.get("x-cisco-spark-canary-opts").getOrElse("disabled")
+          )
+          val dst = mkPath(Path.Utf8("1.1", tag,
+            host.split('.').drop(1).length match {
+              case 2 => host.split('.')(0).split('-').dropRight(1).mkString("-")
+              case _ => host.split('.')(0)
+            }) ++ suffix(req))
           System.err.format("CanaryAndServiceIdentifier: returning path: %s\n\n", dst.toString)
           Future.value(new IdentifiedRequest(dst, req))
         case _ =>
