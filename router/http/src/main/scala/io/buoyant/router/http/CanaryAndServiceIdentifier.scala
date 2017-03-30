@@ -39,7 +39,7 @@ case class CanaryAndServiceIdentifier(
           )
           val dst = mkPath(Path.Utf8("1.1", tag,
             host.split('.').drop(1).length match {
-              case 2 => host.split('.')(0).split('-').dropRight(1).mkString("-")
+              case 2 => if (host.split('.')(0) contains '-') host.split('.')(0).split('-').dropRight(1).mkString("-") else host.split('.')(0)
               case _ => host.split('.')(0)
             }) ++ suffix(req))
           System.err.format("CanaryAndServiceIdentifier: returning path: %s\n\n", dst.toString)
