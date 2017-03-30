@@ -1,24 +1,39 @@
 package io.buoyant.transformer
 
 import com.twitter.finagle.Name.Bound
-import com.twitter.finagle.{Addr, Name, Address, NameTree}
-import com.twitter.util.{Var, Activity}
+import com.twitter.finagle._
+import com.twitter.util.{Activity, Var}
 import io.buoyant.namer.{DelegateTree, DelegatingNameTreeTransformer}
-import java.net.InetAddress
 
 /**
  * Transforms a bound name tree to only include addresses in
  * `gatewayTree` that are in the same subnet of the original address.
  */
 class SubnetGatewayTransformer(
+  prefix: Path,
   gatewayTree: Activity[NameTree[Bound]],
   netmask: Netmask
+) extends GatewayTransformer(prefix, gatewayTree, netmask.local)
+
+class MetadataGatewayTransformer(
+  prefix: Path,
+  gatewayTree: Activity[NameTree[Bound]],
+  metadataField: String
+) extends GatewayTransformer(prefix, gatewayTree, {
+  case (Address.Inet(_, a), Address.Inet(_, b)) => a.get(metadataField) == b.get(metadataField)
+  case _ => true
+})
+
+class GatewayTransformer(
+  prefix: Path,
+  gatewayTree: Activity[NameTree[Bound]],
+  gatewayPredicate: (Address, Address) => Boolean
 ) extends DelegatingNameTreeTransformer {
 
   override protected def transformDelegate(tree: DelegateTree[Bound]): Activity[DelegateTree[Bound]] =
     gatewayTree.map { gateways =>
       val routable = flatten(gateways.eval.toSet.flatten)
-      tree.map(mapBound(_, routable))
+      DelegatingNameTreeTransformer.transformDelegate(tree, mapBound(_, routable))
     }
 
   override protected def transform(tree: NameTree[Bound]): Activity[NameTree[Bound]] =
@@ -46,11 +61,15 @@ class SubnetGatewayTransformer(
       case List(Addr.Bound(addrs, meta), Addr.Bound(gatewayAddrs, _)) =>
         val selected = addrs.flatMap { addr =>
           // select the gateway addresses that share a subnet with addr
-          gatewayAddrs.filter(netmask.local(addr, _))
+          gatewayAddrs.filter(gatewayPredicate(addr, _))
         }
         Addr.Bound(selected, meta)
       case List(addr, _) => addr
     }
-    Name.Bound(vaddr, bound.id, bound.path)
+    bound.id match {
+      case id: Path => Name.Bound(vaddr, prefix ++ id, bound.path)
+      case _ => Name.Bound(vaddr, bound.id, bound.path)
+    }
+
   }
 }

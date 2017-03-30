@@ -13,23 +13,35 @@ import scalariform.formatter.preferences._
 import scoverage.ScoverageKeys._
 import scoverage.ScoverageSbtPlugin
 
+object Base {
+  val developTwitterDeps = settingKey[Boolean]("use SNAPSHOT twitter dependencies")
+  val doDevelopTwitterDeps = (developTwitterDeps in Global) ?? false
+
+  val dockerEnvPrefix = settingKey[String]("prefix to be applied to environment variables")
+  val dockerJavaImage = settingKey[String]("base docker image, providing java")
+  val dockerTag = settingKey[String]("docker image tag")
+  val assemblyExecScript = settingKey[Seq[String]]("script used to execute the application")
+
+  val configFile = settingKey[File]("path to config file")
+  val runtimeConfiguration = settingKey[Configuration]("runtime configuration")
+}
+
 /**
  * Base project configuration.
  */
 class Base extends Build {
-  val headVersion = "0.7.5"
+  import Base._
+
+  val headVersion = "0.9.1"
 
   object Git {
     def git(arg: String, args: String*) = Process("git" +: arg +: args)
     val headRevision = git("rev-parse", "--short", "HEAD").!!.trim
     val version = git("name-rev", "--tags", "--name-only", headRevision).!!.trim match {
-      case tag if tag == headVersion => tag
+      case tag if tag == headVersion || tag == s"${headVersion}^0" => headVersion
       case _ => s"$headVersion-SNAPSHOT"
     }
   }
-
-  val developTwitterDeps = settingKey[Boolean]("use SNAPSHOT twitter dependencies")
-  val doDevelopTwitterDeps = developTwitterDeps ?? false
 
   val baseSettings = Seq(
     organization := "io.buoyant",
@@ -37,16 +49,17 @@ class Base extends Build {
     homepage := Some(url("https://linkerd.io")),
     scalaVersion in GlobalScope := "2.11.7",
     ivyScala := ivyScala.value.map(_.copy(overrideScalaVersion = true)),
-    scalacOptions ++= Seq("-Xfatal-warnings", "-deprecation", "-Ywarn-value-discard"),
+    scalacOptions ++=
+      Seq("-Xfatal-warnings", "-deprecation", "-Ywarn-value-discard", "-feature"),
     // XXX
     //conflictManager := ConflictManager.strict,
     resolvers ++= Seq(
       "twitter-repo" at "https://maven.twttr.com",
-      "local-m2" at s"file:${Path.userHome.absolutePath}/.m2/repository",
+      Resolver.mavenLocal,
       "typesafe" at "https://repo.typesafe.com/typesafe/releases"
     ),
     aggregate in assembly := false,
-    developTwitterDeps := { sys.env.get("TWITTER_DEVELOP") == Some("1") },
+    (developTwitterDeps in Global) := { sys.env.get("TWITTER_DEVELOP") == Some("1") },
 
     // Sonatype publishing
     publishArtifact in Test := false,
@@ -99,31 +112,30 @@ class Base extends Build {
 
   val defaultExecScript =
     """|#!/bin/sh
-       |exec ${JAVA_HOME:-/usr}/bin/java -XX:+PrintCommandLineFlags $JVM_OPTIONS -server -jar $0 "$@"
+       |exec "${JAVA_HOME:-/usr}/bin/java" -XX:+PrintCommandLineFlags $JVM_OPTIONS -server -jar $0 "$@"
        |""".stripMargin.split("\n").toSeq
 
-  val dockerEnvPrefix = settingKey[String]("prefix to be applied to environment variables")
-  val dockerJavaImage = settingKey[String]("base docker image, providing java")
-  val dockerTag = settingKey[String]("docker image tag")
-  val assemblyExecScript = settingKey[Seq[String]]("script used to execute the application")
-
-  val appPackagingSettings = assemblySettings ++ baseDockerSettings ++ Seq(
+  val appAssemblySettings = assemblySettings ++ Seq(
     assemblyExecScript := defaultExecScript,
     assemblyOption in assembly := (assemblyOption in assembly).value.copy(
       prependShellScript = assemblyExecScript.value match {
         case Nil => None
         case script => Some(script)
       }),
-    assemblyJarName in assembly := s"${name.value}-${version.value}-${configuration.value}-exec",
-    assemblyMergeStrategy in assembly := {
+    assemblyJarName in assembly := s"${name.value}-${version.value}-exec",
+    assemblyMergeStrategy in assembly :=  {
+      case "BUILD" => MergeStrategy.discard
       case "com/twitter/common/args/apt/cmdline.arg.info.txt.1" => MergeStrategy.discard
       case "META-INF/io.netty.versions.properties" => MergeStrategy.last
       case path => (assemblyMergeStrategy in assembly).value(path)
-    },
+    }
+  )
 
+  val appPackagingSettings = baseDockerSettings ++ appAssemblySettings ++ Seq(
+    assemblyJarName in assembly := s"${name.value}-${version.value}-${configuration.value}-exec",
     docker <<= docker dependsOn (assembly in configuration),
     dockerEnvPrefix := "",
-    dockerJavaImage := "buoyantio/debian-32-bit",
+    dockerJavaImage <<= (dockerJavaImage in Global).?(_.getOrElse("library/java:openjdk-8-jre")),
     dockerfile in docker := new Dockerfile {
       val envPrefix = dockerEnvPrefix.value.toUpperCase
       val home = s"/${organization.value}/${name.value}/${version.value}"
@@ -144,9 +156,6 @@ class Base extends Build {
     )
   )
 
-  val configFile = settingKey[File]("path to config file")
-  val runtimeConfiguration = settingKey[Configuration]("runtime configuration")
-
   // Examples are named by a .yaml config file
   def exampleSettings(runtime: Project) = Seq(
     // The example config file should match the example configuration name.
@@ -165,6 +174,9 @@ class Base extends Build {
   def projectDir(dir: String): Project =
     project(dir.replaceAll("/", "-"), file(dir))
 
+  def aggregateDir(dir: String, projects: ProjectReference*): Project =
+    projectDir(dir).settings(aggregateSettings).aggregate(projects:_*)
+
   def project(id: String, dir: File): Project = Project(id, dir)
     .settings(name := id)
     .settings(baseSettings)
@@ -176,11 +188,13 @@ class Base extends Build {
   val testUtil = projectDir("test-util")
     .settings(coverageExcludedPackages := "io.buoyant.test.*")
     .settings(libraryDependencies += Deps.scalatest)
-    .settings(libraryDependencies += {
-      val dep = Deps.twitterUtil("core")
+    .settings(libraryDependencies ++= {
+      val deps = Deps.twitterUtil("core") :: Deps.twitterUtil("logging") :: Nil
       if (doDevelopTwitterDeps.value) {
-        dep.copy(revision = dep.revision+"-SNAPSHOT")
-      } else dep
+        deps.map { dep =>
+          dep.copy(revision = dep.revision+"-SNAPSHOT")
+        }
+      } else deps
     })
 
   /**
@@ -242,17 +256,18 @@ class Base extends Build {
       .dependsOn(testUtil % IntegrationTest)
 
     /** Writes build metadata into the projects resources */
-    def withBuildProperties(): Project = project
+    def withBuildProperties(path: String): Project = project
       .settings((resourceGenerators in Compile) <+=
         (resourceManaged in Compile, name, version).map { (dir, name, ver) =>
           val rev = Process("git" :: "rev-parse" :: "HEAD" :: Nil).!!.trim
           val build = new java.text.SimpleDateFormat("yyyyMMdd-HHmmss").format(new java.util.Date)
           val contents = s"name=$name\nversion=$ver\nbuild_revision=$rev\nbuild_name=$build"
-          val file = dir / "io" / "buoyant" / name / "build.properties"
+          val file = dir / path / "build.properties"
           IO.write(file, contents)
           Seq(file)
         })
   }
 
   implicit def pimpMyProject(p: Project): ProjectHelpers = ProjectHelpers(p)
+
 }

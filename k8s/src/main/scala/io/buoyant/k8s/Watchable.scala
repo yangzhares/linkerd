@@ -1,20 +1,22 @@
 package io.buoyant.k8s
 
+import com.fasterxml.jackson.core.`type`.TypeReference
 import com.twitter.concurrent.AsyncStream
-import com.twitter.finagle.http
+import com.twitter.finagle.{Failure, http}
 import com.twitter.finagle.param.HighResTimer
 import com.twitter.finagle.service.{Backoff, RetryBudget, RetryFilter, RetryPolicy}
 import com.twitter.finagle.stats.StatsReceiver
 import com.twitter.finagle.tracing.Trace
 import com.twitter.io.Reader
 import com.twitter.util.TimeConversions._
-import com.twitter.util._
+import com.twitter.util.{NonFatal => _, _}
 import java.util.concurrent.atomic.AtomicReference
+import scala.util.control.NonFatal
 
 /**
  * An abstract class that encapsulates the ability to Watch a k8s [[Resource]].
  */
-private[k8s] abstract class Watchable[O <: KubeObject: Manifest, W <: Watch[O]: Manifest]
+private[k8s] abstract class Watchable[O <: KubeObject: TypeReference, W <: Watch[O]: TypeReference]
   extends Resource {
   import Watchable._
 
@@ -37,6 +39,8 @@ private[k8s] abstract class Watchable[O <: KubeObject: Manifest, W <: Watch[O]: 
     RetryPolicy.backoff(backoffs) {
       // We will assume 5xx are retryable, everything else is not for now
       case (_, Return(rep)) => rep.status.code >= 500 && rep.status.code < 600
+      // Don't retry on interruption
+      case (_, Throw(e: Failure)) if e.isFlagged(Failure.Interrupted) => false
       case (_, Throw(NonFatal(ex))) =>
         log.error(s"retrying k8s request to $path on error $ex")
         true

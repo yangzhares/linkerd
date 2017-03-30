@@ -27,11 +27,9 @@ object K8sInitializer extends K8sInitializer
 
 case class K8sConfig(
   host: Option[String],
-  port: Option[Port]
+  port: Option[Port],
+  labelSelector: Option[String]
 ) extends NamerConfig with ClientConfig {
-
-  @JsonIgnore
-  override val experimentalRequired = true
 
   @JsonIgnore
   override def defaultPrefix: Path = Path.read("/io.l5d.k8s")
@@ -49,6 +47,6 @@ case class K8sConfig(
       val label = param.Label(s"namer${prefix.show}/$ns")
       Api(client.configured(label).newService(dst)).withNamespace(ns)
     }
-    new EndpointsNamer(prefix, mkNs)
+    new EndpointsNamer(prefix, labelSelector, mkNs)
   }
 }

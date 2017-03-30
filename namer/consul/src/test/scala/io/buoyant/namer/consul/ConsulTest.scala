@@ -12,7 +12,7 @@ class ConsulTest extends FunSuite {
 
   test("sanity") {
     // ensure it doesn't totally blowup
-    val _ = ConsulConfig(None, None, None, None).newNamer(Stack.Params.empty)
+    val _ = ConsulConfig(None, None, None, None, None, None, None, None, None).newNamer(Stack.Params.empty)
   }
 
   test("service registration") {
@@ -22,7 +22,6 @@ class ConsulTest extends FunSuite {
   test("parse minimal config") {
     val yaml = s"""
                   |kind: io.l5d.consul
-                  |experimental: true
       """.stripMargin
 
     val mapper = Parser.objectMapper(yaml, Iterable(Seq(ConsulInitializer)))
@@ -35,13 +34,14 @@ class ConsulTest extends FunSuite {
   test("parse all options config") {
     val yaml = s"""
                     |kind: io.l5d.consul
-                    |experimental: true
                     |host: consul.site.biz
                     |port: 8600
                     |token: some-token
                     |includeTag: true
                     |setHost: true
                     |consistencyMode: stale
+                    |failFast: true
+                    |preferServiceAddress: false
       """.stripMargin
 
     val mapper = Parser.objectMapper(yaml, Iterable(Seq(ConsulInitializer)))
@@ -52,20 +52,8 @@ class ConsulTest extends FunSuite {
     assert(consul.setHost == Some(true))
     assert(consul.includeTag == Some(true))
     assert(consul.consistencyMode == Some(ConsistencyMode.Stale))
+    assert(consul.failFast == Some(true))
+    assert(consul.preferServiceAddress == Some(false))
     assert(!consul.disabled)
-  }
-
-  test("parse config without experimental param") {
-    val yaml = s"""
-                  |kind: io.l5d.consul
-                  |host: consul.site.biz
-                  |port: 8600
-      """.stripMargin
-
-    val mapper = Parser.objectMapper(yaml, Iterable(Seq(ConsulInitializer)))
-    val consul = mapper.readValue[NamerConfig](yaml).asInstanceOf[ConsulConfig]
-    assert(consul.host == Some("consul.site.biz"))
-    assert(consul.port == Some(Port(8600)))
-    assert(consul.disabled)
   }
 }

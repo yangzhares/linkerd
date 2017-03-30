@@ -1,16 +1,15 @@
 package com.twitter.finagle.buoyant.linkerd
 
 import com.twitter.conversions.time._
-import com.twitter.finagle.{Addr, Deadline, Dtab, Path, Service, ServiceFactory, Stack}
+import com.twitter.finagle.{Addr, Dtab, Path, Service, ServiceFactory, Stack}
 import com.twitter.finagle.buoyant.Dst
-import com.twitter.finagle.context.Contexts
+import com.twitter.finagle.context.{Contexts, Deadline}
 import com.twitter.finagle.http.{Request, Response}
 import com.twitter.finagle.tracing.Trace
 import com.twitter.util.{Future, Time, Var}
-import io.buoyant.test.Awaits
-import org.scalatest.FunSuite
+import io.buoyant.test.FunSuite
 
-class HeadersTest extends FunSuite with Awaits {
+class HeadersTest extends FunSuite {
 
   test("round trip encoding for ctx header") {
     val orig = Trace.nextId

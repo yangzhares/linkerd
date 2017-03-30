@@ -1,6 +1,6 @@
 package io.buoyant.linkerd
 
-import com.fasterxml.jackson.annotation.{JsonIgnore, JsonProperty, JsonTypeInfo, JsonSubTypes}
+import com.fasterxml.jackson.annotation.{JsonIgnore, JsonProperty, JsonSubTypes, JsonTypeInfo}
 import com.fasterxml.jackson.core.{io => _}
 import com.twitter.conversions.time._
 import com.twitter.finagle._
@@ -9,14 +9,15 @@ import com.twitter.finagle.client.DefaultPool
 import com.twitter.finagle.naming.NameInterpreter
 import com.twitter.finagle.service._
 import com.twitter.util.{Closable, Duration}
-import io.buoyant.namer.{InterpreterConfig, DefaultInterpreterConfig}
-import io.buoyant.router.{ClassifiedRetries, RoutingFactory}
+import io.buoyant.config.PolymorphicConfig
+import io.buoyant.namer.{DefaultInterpreterConfig, InterpreterConfig}
+import io.buoyant.router.{ClassifiedRetries, Originator, RoutingFactory}
 
 /**
  * A router configuration builder api.
  *
  * Each router must have a [[ProtocolInitializer protocol]] that
- * assists in the parsing and intialization of a router and its
+ * assists in the parsing and initialization of a router and its
  * services.
  *
  * `params` contains all params configured on this router, including
@@ -39,9 +40,10 @@ trait Router {
 
   protected def configureServer(s: Server): Server
 
-  def withParams(ps: Stack.Params): Router =
-    _withParams(ps)
-      .withServers(servers.map(configureServer(_)))
+  def withParams(ps: Stack.Params): Router = {
+    val routerWithParams = _withParams(ps)
+    routerWithParams.withServers(routerWithParams.servers.map(routerWithParams.configureServer))
+  }
 
   def configured[P: Stack.Param](p: P): Router = withParams(params + p)
   def configured(ps: Stack.Params): Router = withParams(params ++ ps)
@@ -95,8 +97,9 @@ trait RouterConfig {
   def servers: Seq[ServerConfig]
   def client: Option[ClientConfig]
 
-  var baseDtab: Option[Dtab] = None
+  var dtab: Option[Dtab] = None
   var failFast: Option[Boolean] = None
+  var originator: Option[Boolean] = None
   var timeoutMs: Option[Int] = None
   var dstPrefix: Option[String] = None
 
@@ -165,10 +168,25 @@ trait RouterConfig {
   private def defaultBudget: Retries.Budget =
     Retries.Budget(RetryBudget(), Backoff.const(Duration.Zero))
 
+  /**
+   * This property must be set to true in order to use this router if it
+   * is experimental.
+   */
+  @JsonProperty("experimental")
+  var _experimentalEnabled: Option[Boolean] = None
+
+  /**
+   * If this protocol is experimental but has not set the
+   * `experimental` property.
+   */
+  @JsonIgnore
+  def disabled = protocol.experimentalRequired && !_experimentalEnabled.contains(true)
+
   @JsonIgnore
   def routerParams = (Stack.Params.empty + defaultBudget)
-    .maybeWith(baseDtab.map(dtab => RoutingFactory.BaseDtab(() => dtab)))
+    .maybeWith(dtab.map(dtab => RoutingFactory.BaseDtab(() => dtab)))
     .maybeWith(failFast.map(FailFastFactory.FailFast(_)))
+    .maybeWith(originator.map(Originator.Param(_)))
     .maybeWith(timeoutMs.map(timeout => TimeoutFilter.Param(timeout.millis)))
     .maybeWith(dstPrefix.map(pfx => RoutingFactory.DstPrefix(Path.read(pfx))))
     .maybeWith(bindingCache.map(_.capacity))
@@ -200,13 +218,15 @@ class ClientConfig {
   var loadBalancer: Option[LoadBalancerConfig] = None
   var hostConnectionPool: Option[HostConnectionPool] = None
   var retries: Option[RetriesConfig] = None
+  var failureAccrual: Option[FailureAccrualConfig] = None
 
   @JsonIgnore
   def clientParams: Stack.Params = Stack.Params.empty
     .maybeWith(loadBalancer.map(_.clientParams))
     .maybeWith(hostConnectionPool.map(_.param))
     .maybeWith(retries.flatMap(_.mkBackoff))
-    .maybeWith(retries.flatMap(_.mkBudget))
+    .maybeWith(retries.flatMap(_.mkBudget)) +
+    FailureAccrualConfig.param(failureAccrual)
 }
 
 case class RetriesConfig(
@@ -227,15 +247,11 @@ case class RetriesConfig(
     budget.map { b => Retries.Budget(b.mk, Backoff.const(Duration.Zero)) }
 }
 
-@JsonTypeInfo(
-  use = JsonTypeInfo.Id.NAME,
-  include = JsonTypeInfo.As.PROPERTY, property = "kind"
-)
 @JsonSubTypes(Array(
   new JsonSubTypes.Type(value = classOf[ConstantBackoffConfig], name = "constant"),
   new JsonSubTypes.Type(value = classOf[JitteredBackoffConfig], name = "jittered")
 ))
-trait BackoffConfig {
+abstract class BackoffConfig extends PolymorphicConfig {
   @JsonIgnore
   def mk: Stream[Duration]
 }

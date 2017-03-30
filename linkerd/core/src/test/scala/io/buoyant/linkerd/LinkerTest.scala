@@ -1,12 +1,11 @@
 package io.buoyant.linkerd
 
-import com.twitter.finagle.buoyant.DstBindingFactory
 import com.twitter.finagle.param
 import com.twitter.finagle.stats.InMemoryStatsReceiver
 import com.twitter.finagle.tracing._
 import io.buoyant.config.{ConflictingLabels, ConflictingPorts, ConflictingSubtypes}
 import io.buoyant.namer.Param.Namers
-import io.buoyant.namer.{NamerInitializer, ConflictingNamerInitializer, TestNamerInitializer, TestNamer}
+import io.buoyant.namer.{ConflictingNamerInitializer, NamerInitializer, TestNamer, TestNamerInitializer}
 import io.buoyant.telemetry._
 import io.buoyant.test.Exceptions
 import java.net.{InetAddress, InetSocketAddress}
@@ -17,9 +16,8 @@ class LinkerTest extends FunSuite with Exceptions {
   def initializer(
     protos: Seq[ProtocolInitializer] = Seq(TestProtocol.Plain, TestProtocol.Fancy),
     namers: Seq[NamerInitializer] = Seq(TestNamerInitializer),
-    tracers: Seq[TracerInitializer] = Seq(TestTracerInitializer),
     telemeters: Seq[TelemeterInitializer] = Seq(new TestTelemeterInitializer)
-  ) = Linker.Initializers(protocol = protos, namer = namers, tracer = tracers, telemetry = telemeters)
+  ) = Linker.Initializers(protocol = protos, namer = namers, telemetry = telemeters)
 
   def parse(yaml: String) = initializer().load(yaml)
 
@@ -30,6 +28,7 @@ class LinkerTest extends FunSuite with Exceptions {
          |  servers:
          |  - port: 1
          |- protocol: fancy
+         |  experimental: true
          |  servers:
          |  - port: 2
          |""".stripMargin
@@ -84,6 +83,7 @@ class LinkerTest extends FunSuite with Exceptions {
          |  servers:
          |  - port: 1
          |- protocol: fancy
+         |  experimental: true
          |  servers:
          |  - port: 2
          |""".stripMargin
@@ -153,6 +153,7 @@ class LinkerTest extends FunSuite with Exceptions {
          |  - ip: 127.0.0.2
          |    port: 3
          |- protocol: fancy
+         |  experimental: true
          |  servers:
          |  - port: 3
          |""".stripMargin
@@ -179,26 +180,9 @@ class LinkerTest extends FunSuite with Exceptions {
     assert(linker.namers != Nil)
   }
 
-  test("with tracers") {
+  test("with namers & telemetry") {
     val yaml =
-      """|tracers:
-         |- kind: test
-         |routers:
-         |- protocol: plain
-         |  servers:
-         |  - port: 1
-         |""".stripMargin
-    val linker = parse(yaml)
-    val param.Tracer(tracer) = linker.routers.head.params[param.Tracer]
-    assert(tracer != DefaultTracer)
-    assert(linker.tracer != DefaultTracer)
-  }
-
-  test("with namers & tracers & telemetry") {
-    val yaml =
-      """|tracers:
-         |- kind: test
-         |telemetry:
+      """|telemetry:
          |- kind: io.l5d.testTelemeter
          |  metrics: true
          |- kind: io.l5d.testTelemeter
@@ -222,7 +206,7 @@ class LinkerTest extends FunSuite with Exceptions {
       case Seq((_, namer: TestNamer)) =>
       case namers => fail(s"unexpected namers: $namers")
     }
-    assert(linker.telemeters.size == 3)
+    assert(linker.telemeters.size == 5)
 
     val ttracers = linker.telemeters.map(_.tracer).collect { case t: BufferingTracer => t }
     assert(ttracers.size == 2)
@@ -247,14 +231,28 @@ class LinkerTest extends FunSuite with Exceptions {
   test("with admin") {
     val yaml =
       """|admin:
-         |  port: 9991
+         |  ip: 127.0.0.1
+         |  port: 42000
          |routers:
          |- protocol: plain
          |  servers:
          |  - port: 1
          |""".stripMargin
     val linker = parse(yaml)
-    assert(linker.admin.address.asInstanceOf[InetSocketAddress].getPort == 9991)
+    assert(linker.admin.address.asInstanceOf[InetSocketAddress].getHostString == "127.0.0.1")
+    assert(linker.admin.address.asInstanceOf[InetSocketAddress].getPort == 42000)
+  }
+
+  test("with admin default") {
+    val yaml =
+      """|routers:
+        |- protocol: plain
+        |  servers:
+        |  - port: 1
+        |""".stripMargin
+    val linker = parse(yaml)
+    assert(linker.admin.address.asInstanceOf[InetSocketAddress].getHostString == "0.0.0.0")
+    assert(linker.admin.address.asInstanceOf[InetSocketAddress].getPort == 9990)
   }
 
   test("conflicting subtypes") {
@@ -269,5 +267,20 @@ class LinkerTest extends FunSuite with Exceptions {
     assertThrows[ConflictingSubtypes] {
       initializer(namers = Seq(TestNamerInitializer, ConflictingNamerInitializer)).load(yaml)
     }
+  }
+
+  test("experimental required") {
+    val yaml =
+      """|routers:
+         |- protocol: fancy
+         |  servers:
+         |  - port: 1
+         |""".stripMargin
+    val iae = intercept[IllegalArgumentException] {
+      parse(yaml)
+    }
+    assert(iae.getMessage ==
+      "The fancy protocol is experimental and must be explicitly enabled by " +
+      "setting the `experimental' parameter to `true' on each router.")
   }
 }

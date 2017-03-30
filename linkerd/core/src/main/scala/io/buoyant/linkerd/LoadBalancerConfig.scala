@@ -1,20 +1,21 @@
 package io.buoyant.linkerd
 
 import com.fasterxml.jackson.annotation.JsonSubTypes.Type
-import com.fasterxml.jackson.annotation.{JsonIgnore, JsonSubTypes, JsonTypeInfo}
+import com.fasterxml.jackson.annotation.{JsonIgnore, JsonSubTypes}
 import com.twitter.conversions.time._
 import com.twitter.finagle.Stack
 import com.twitter.finagle.loadbalancer.LoadBalancerFactory.EnableProbation
 import com.twitter.finagle.loadbalancer.{Balancers, LoadBalancerFactory}
+import io.buoyant.config.PolymorphicConfig
 
-@JsonTypeInfo(use = JsonTypeInfo.Id.NAME, include = JsonTypeInfo.As.PROPERTY, property = "kind")
 @JsonSubTypes(Array(
   new Type(value = classOf[P2C], name = "p2c"),
   new Type(value = classOf[P2CEwma], name = "ewma"),
   new Type(value = classOf[Aperture], name = "aperture"),
-  new Type(value = classOf[Heap], name = "heap")
+  new Type(value = classOf[Heap], name = "heap"),
+  new Type(value = classOf[RoundRobin], name = "roundRobin")
 ))
-trait LoadBalancerConfig {
+abstract class LoadBalancerConfig extends PolymorphicConfig {
   val factory: LoadBalancerFactory
 
   val enableProbation: Option[Boolean] = None
@@ -57,4 +58,11 @@ case class Aperture(
 class Heap extends LoadBalancerConfig {
   @JsonIgnore
   val factory = Balancers.heap()
+}
+
+case class RoundRobin(maxEffort: Option[Int]) extends LoadBalancerConfig {
+  @JsonIgnore
+  val factory = Balancers.roundRobin(
+    maxEffort = maxEffort.getOrElse(Balancers.MaxEffort)
+  )
 }

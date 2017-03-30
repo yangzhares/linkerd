@@ -11,7 +11,7 @@ routers:
     tls:
       certPath: /certificates/certificate.pem
       keyPath: /certificates/key.pem
-  baseDtab: |
+  dtab: |
     /http => /$/inet/127.1/8080;
 ```
 
@@ -103,14 +103,14 @@ supports the following options:
 Key | Default Value | Description
 --- | ------------- | -----------
 caCertPath | ? | The path to the CA cert used for common name validation.
-names | _required_ | A list of [name matchers]("#bound-path-name-matchers").
+names | _required_ | A list of [name matchers](#bound-path-name-matchers).
 strict | true | When true, paths that fail to match any prefixes throw an exception.
 
 #### Bound Path Name Matchers
 
 Key | Default Value | Description
 --- | ------------- | -----------
-prefix | _required_ | A path prefix.  All destinations which match this prefix will use this entry to determine the common name.  Wildcards and variable capture are allowed (see: `io.buoyant.linkerd.util.PathMatcher`).
+prefix | _required_ | A path prefix.  All destinations which match this prefix will use this entry to determine the common name.  Wildcards and variable capture are allowed (see: `io.buoyant.namer.util.PathMatcher`).
 commonNamePattern | _required_ | The common name to use for destinations matching the above prefix.  Variables captured in the prefix may be used in this string.
 
 See [Transparent TLS with linkerd](https://blog.buoyant.io/2016/03/24/transparent-tls-with-linkerd/) for more on how boundPath matches prefixes when routing requests.

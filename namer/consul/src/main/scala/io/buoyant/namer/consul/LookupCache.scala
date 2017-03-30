@@ -14,8 +14,11 @@ private[consul] class LookupCache(
   agentApi: v1.AgentApi,
   setHost: Boolean = false,
   consistency: Option[v1.ConsistencyMode] = None,
+  preferServiceAddress: Option[Boolean] = None,
   stats: StatsReceiver = NullStatsReceiver
 ) {
+
+  private[this] val localDcMoniker = ".local"
 
   private[this] val lookupCounter = stats.counter("lookups")
 
@@ -25,10 +28,10 @@ private[consul] class LookupCache(
     id: Path,
     residual: Path
   ): Activity[NameTree[Name]] = {
-    log.debug("consul lookup: %s %s", id.show)
+    log.debug("consul lookup: %s %s", dc, id.show)
     lookupCounter.incr()
 
-    Dc.watch(dc).map { services =>
+    resolveDc(dc).flatMap(Dc.watch).map { services =>
       services.get(key) match {
         case None =>
           log.debug("consul dc %s service %s missing", dc, key)
@@ -41,16 +44,26 @@ private[consul] class LookupCache(
     }
   }
 
-  // Note that this activity is never recomputed.  We simply do a
+  private[this] def resolveDc(datacenter: String): Activity[String] =
+    if (datacenter == localDcMoniker)
+      localDc.map(_.getOrElse(datacenter))
+    else Activity.value(datacenter)
+
+  // Note that this 3 activities are never recomputed.  We simply do a
   // lookup for the domain and then wrap it an activity for
   // convenience.
+  private[this] lazy val agentConfig: Activity[Option[v1.Config]] =
+    Activity.future(agentApi.localAgent(retry = true)).map(_.Config)
+
   private[this] lazy val domain: Activity[Option[String]] =
     if (setHost) {
-      Activity.future(agentApi.localAgent(retry = true)).map { la =>
-        val dom = la.Config.flatMap(_.Domain).getOrElse("consul")
+      agentConfig.map { config =>
+        val dom = config.flatMap(_.Domain).getOrElse("consul")
         Some(dom.stripPrefix(".").stripSuffix("."))
       }
     } else Activity.value(None)
+
+  private[this] lazy val localDc = agentConfig.map(_.flatMap(_.Datacenter))
 
   /**
    * Contains all cached responses from the Consul API
@@ -83,7 +96,7 @@ private[consul] class LookupCache(
       name: String,
       domain: Option[String]
     ): Activity[Map[SvcKey, Var[Addr]]] = {
-      val dc = DcServices(consulApi, name, domain, consistency, dcStats)
+      val dc = DcServices(consulApi, name, domain, consistency, preferServiceAddress, dcStats)
       activity() = Activity.Ok(cache + (name -> dc))
       dc
     }

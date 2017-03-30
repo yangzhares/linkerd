@@ -1,12 +1,14 @@
 package io.buoyant.linkerd
 
 import com.twitter.finagle.Path
-import com.twitter.util.{Await, Awaitable, Closable, CloseAwaitably, Future, Return, Throw, Time}
-import io.buoyant.admin.App
+import com.twitter.util._
+import io.buoyant.admin.{App, Build}
 import io.buoyant.linkerd.admin.LinkerdAdmin
-import io.buoyant.telemetry.CommonMetricsTelemeter
 import java.io.File
+import java.net.{InetSocketAddress, NetworkInterface}
+import scala.collection.JavaConverters._
 import scala.io.Source
+import sun.misc.{Signal, SignalHandler}
 
 /**
  * linkerd main execution.
@@ -17,20 +19,23 @@ import scala.io.Source
  */
 object Main extends App {
 
-  private[this] val DefaultTelemeter =
-    new CommonMetricsTelemeter
+  private[this] val DefaultShutdownGrace =
+    Duration.fromSeconds(10)
 
   def main() {
-    val build = Build.load(getClass.getResourceAsStream("/io/buoyant/linkerd-main/build.properties"))
+    val build = Build.load("/io/buoyant/linkerd/build.properties")
     log.info("linkerd %s (rev=%s) built at %s", build.version, build.revision, build.name)
 
     args match {
       case Array(path) =>
         val config = loadLinker(path)
-        val linker = config.mk(DefaultTelemeter)
+        val linker = config.mk()
         val admin = initAdmin(config, linker)
         val telemeters = linker.telemeters.map(_.run())
         val routers = linker.routers.map(initRouter(_))
+
+        log.info("initialized")
+        registerTerminationSignalHandler(config.admin.flatMap(_.shutdownGraceMs))
         closeOnExit(Closable.sequence(
           Closable.all(routers: _*),
           Closable.all(telemeters: _*),
@@ -89,19 +94,56 @@ object Main extends App {
     server: Server.Initializer,
     name: Path
   ): Closable = {
+    val addrs = if (server.ip.getHostAddress == "0.0.0.0") {
+      val a = for {
+        interface <- NetworkInterface.getNetworkInterfaces.asScala
+        if interface.isUp
+        inet <- interface.getInetAddresses.asScala
+        if !inet.isLoopbackAddress
+      } yield new InetSocketAddress(inet.getHostAddress, server.port)
+      a.toSeq
+    } else {
+      Seq(server.addr)
+    }
+
     announcers0.filter { case (pfx, _) => name.startsWith(pfx) } match {
       case Nil =>
         log.warning("no announcer found for %s", name.show)
         Closable.nop
 
       case announcers =>
-        val closers = announcers.map {
+        val closers = announcers.flatMap {
           case (prefix, announcer) =>
-            log.info("announcing %s as %s to %s", server.addr, name.show, announcer.scheme)
-            announcer.announce(server.addr, name.drop(prefix.size))
+            for {
+              addr <- addrs
+            } yield {
+              log.info("announcing %s as %s to %s", addr, name.show, announcer.scheme)
+              announcer.announce(addr, name.drop(prefix.size))
+            }
         }
         Closable.all(closers: _*)
     }
+  }
+
+  /**
+   * Trap termination signals and triggers an App.close for a graceful shutdown.
+   * Shutdown hook is not used because it has, at least, the following problems:
+   * <ul>
+   *   <li>LogManager uses a shutdown hook which makes nothing to be logged during shutdown
+   *   <li>TracerCache uses a shutdown hook to flush
+   * </ul>
+   */
+  private def registerTerminationSignalHandler(shutdownGraceMs: Option[Int]): Unit = {
+    val shutdownHandler = new SignalHandler {
+      override def handle(sig: Signal): Unit = {
+        log.info("Received %s. Shutting down ...", sig)
+        val closeTimeOut = shutdownGraceMs.map(Duration.fromMilliseconds(_)).getOrElse(DefaultShutdownGrace)
+        Await.result(close(closeTimeOut))
+      }
+    }
+
+    Signal.handle(new Signal("INT"), shutdownHandler)
+    val _ = Signal.handle(new Signal("TERM"), shutdownHandler)
   }
 
 }

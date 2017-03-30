@@ -1,33 +1,28 @@
 package io.buoyant.linkerd
 package admin
 
-import com.twitter.app.App
 import com.twitter.finagle._
 import com.twitter.finagle.buoyant.DstBindingFactory
-import com.twitter.finagle.http.{Request, Response}
 import com.twitter.finagle.naming.NameInterpreter
-import com.twitter.server.handler.{SummaryHandler => _, _}
-import com.twitter.util.Future
+import com.twitter.server.handler.{ResourceHandler, SummaryHandler => _}
+import io.buoyant.admin.Admin.{Handler, NavItem}
 import io.buoyant.admin.names.{BoundNamesHandler, DelegateApiHandler, DelegateHandler}
-import io.buoyant.admin.{Admin, ConfigHandler, StaticFilter}
-import io.buoyant.linkerd.Linker
-import io.buoyant.linkerd.Linker.LinkerConfig
-import io.buoyant.namer.EnumeratingNamer
+import io.buoyant.admin.{Admin, ConfigHandler, StaticFilter, _}
+import io.buoyant.namer.{Delegator, EnumeratingNamer, NamespacedInterpreterConfig}
 import io.buoyant.router.RoutingFactory
-import io.buoyant.telemetry.Telemeter
 
 object LinkerdAdmin {
 
-  def boundNames(namers: Seq[Namer]): Admin.Handlers = {
+  def boundNames(namers: Seq[Namer]): Seq[Handler] = {
     val enumerating = namers.collect { case en: EnumeratingNamer => en }
-    Seq("/bound-names.json" -> new BoundNamesHandler(enumerating))
+    Seq(Handler("/bound-names.json", new BoundNamesHandler(enumerating)))
   }
 
-  def config(lc: Linker.LinkerConfig): Admin.Handlers = Seq(
-    "/config.json" -> new ConfigHandler(lc, Linker.LoadedInitializers.iter)
+  def config(lc: Linker.LinkerConfig): Seq[Handler] = Seq(
+    Handler("/config.json", new ConfigHandler(lc, Linker.LoadedInitializers.iter))
   )
 
-  def delegator(routers: Seq[Router]): Admin.Handlers = {
+  def delegator(adminHandler: AdminHandler, routers: Seq[Router]): Seq[Handler] = {
     val byLabel = routers.map(r => r.label -> r).toMap
     val dtabs = byLabel.mapValues { router =>
       val RoutingFactory.BaseDtab(dtab) = router.params[RoutingFactory.BaseDtab]
@@ -41,24 +36,57 @@ object LinkerdAdmin {
       interpreters.getOrElse(label, NameInterpreter)
 
     Seq(
-      "/delegator" -> new DelegateHandler(AdminHandler, dtabs, getInterpreter),
-      "/delegator.json" -> new DelegateApiHandler(getInterpreter)
+      Handler("/delegator", new DelegateHandler(adminHandler, dtabs, getInterpreter)),
+      Handler("/delegator.json", new DelegateApiHandler(getInterpreter))
     )
   }
 
-  val static: Admin.Handlers = Seq(
-    "/" -> new DashboardHandler,
-    "/files/" -> StaticFilter.andThen(ResourceHandler.fromDirectoryOrJar(
+  def static(adminHandler: AdminHandler): Seq[Handler] = Seq(
+    Handler("/", new DashboardHandler(adminHandler)),
+    Handler("/files/", StaticFilter.andThen(ResourceHandler.fromDirectoryOrJar(
       baseRequestPath = "/files/",
       baseResourcePath = "io/buoyant/admin",
       localFilePath = "admin/src/main/resources/io/buoyant/admin"
-    )),
-    "/help" -> new HelpPageHandler
+    ))),
+    Handler("/help", new HelpPageHandler(adminHandler)),
+    Handler("/logging", new LoggingHandler(adminHandler)),
+    Handler("/logging.json", new LoggingApiHandler())
   )
 
-  def apply(lc: Linker.LinkerConfig, linker: Linker): Admin.Handlers =
-    static ++ config(lc) ++
+  def apply(lc: Linker.LinkerConfig, linker: Linker): Seq[Handler] = {
+    val navItems = Seq(
+      NavItem("dtab", "delegator"),
+      NavItem("logging", "logging")
+    ) ++ Admin.extractNavItems(
+        linker.namers ++
+          linker.routers.map(_.interpreter) ++
+          linker.routers ++
+          linker.telemeters
+      ) :+ NavItem("help", "help")
+
+    def uniqBy[T, U](items: Seq[T])(f: T => U): Seq[T] = items match {
+      case Nil => items
+      case Seq(t) => items
+      case t +: rest if rest.map(f).contains(f(t)) => uniqBy(rest)(f)
+      case t +: rest => t +: uniqBy(rest)(f)
+    }
+
+    val adminHandler = new AdminHandler(uniqBy(navItems)(_.name))
+
+    val extHandlers = Admin.extractHandlers(
+      linker.namers ++
+        linker.routers ++
+        linker.routers.map(_.interpreter) ++
+        linker.telemeters
+    ).map {
+        case Handler(url, service, css) =>
+          val adminFilter = new AdminFilter(adminHandler, css)
+          Handler(url, adminFilter.andThen(service), css)
+      }
+
+    static(adminHandler) ++ config(lc) ++
       boundNames(linker.namers.map { case (_, n) => n }) ++
-      delegator(linker.routers) ++
-      Admin.extractHandlers(linker.namers ++ linker.routers ++ linker.telemeters)
+      delegator(adminHandler, linker.routers) ++
+      extHandlers
+  }
 }

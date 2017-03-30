@@ -35,10 +35,11 @@ class DtabHandler(
       <html>
         <head>
           <title>namerd admin</title>
-          <link rel="shortcut icon" href="/files/images/favicon.png" />
-          <link type="text/css" href="/files/css/lib/bootstrap.min.css" rel="stylesheet"/>
-          <link type="text/css" href="/files/css/dashboard.css" rel="stylesheet"/>
-          <link type="text/css" href="/files/css/delegator.css" rel="stylesheet"/>
+          <link rel="shortcut icon" href="../files/images/favicon.png" />
+          <link type="text/css" href="../files/css/lib/bootstrap.min.css" rel="stylesheet"/>
+          <link type="text/css" href="../files/css/fonts.css" rel="stylesheet"/>
+          <link type="text/css" href="../files/css/dashboard.css" rel="stylesheet"/>
+          <link type="text/css" href="../files/css/delegator.css" rel="stylesheet"/>
         </head>
         <body>
           <div class="container-fluid">
@@ -52,14 +53,7 @@ class DtabHandler(
           </div>
 
           <script id="data" type="application/json">{"namespace": "$name", "dtab": ${DelegateApiHandler.Codec.writeStr(dtab)}}</script>
-
-          <script src="/files/js/lib/jquery.min.js"></script>
-          <script src="/files/js/lib/bootstrap.min.js"></script>
-          <script src="/files/js/lib/lodash.min.js"></script>
-          <script src="/files/js/lib/handlebars-v4.0.5.js"></script>
-          <script src="/files/js/dtab_viewer.js"></script>
-          <script src="/files/js/delegator.js"></script>
-          <script src="/files/js/dashboard_delegate.js"></script>
+          <script data-main="../files/js/main-namerd" src="../files/js/lib/require.js"></script>
         </body>
       </html>
     """

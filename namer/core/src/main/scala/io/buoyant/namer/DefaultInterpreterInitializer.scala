@@ -3,9 +3,9 @@ package io.buoyant.namer
 import com.twitter.finagle.Name.Bound
 import com.twitter.finagle._
 import com.twitter.finagle.naming.NameInterpreter
-import com.twitter.util.{Activity, NonFatal, Var}
+import com.twitter.util.{Activity, Var}
 import io.buoyant.namer.DelegateTree._
-import scala.util.control.NoStackTrace
+import scala.util.control.{NonFatal, NoStackTrace}
 import scala.{Exception => ScalaException}
 
 object DefaultInterpreterConfig {
@@ -77,8 +77,11 @@ case class ConfiguredNamersInterpreter(namers: Seq[(Path, Namer)])
 
   override def delegate(
     dtab: Dtab,
-    tree: DelegateTree[Name.Path]
-  ): Activity[DelegateTree[Bound]] = delegateBind(dtab, 0, tree).map(_.simplified)
+    tree: NameTree[Name.Path]
+  ): Activity[DelegateTree[Bound]] = {
+    val dtree = DelegateTree.fromNameTree(tree)
+    delegateBind(dtab, 0, dtree).map(_.simplified)
+  }
 
   val MaxDepth = 100
 

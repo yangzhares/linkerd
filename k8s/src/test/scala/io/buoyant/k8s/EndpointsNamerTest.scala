@@ -53,24 +53,31 @@ class EndpointsNamerTest extends FunSuite with Awaits {
     }
     val api = v1.Api(service)
     val timer = new MockTimer
-    val namer = new EndpointsNamer(Path.read("/test"), api.withNamespace, Stream.continually(1.millis))(timer)
+    val namer = new EndpointsNamer(Path.read("/test"), None, api.withNamespace, Stream.continually(1.millis))(timer)
 
+    def name = "/srv/http/sessions"
+
+    @volatile var stateUpdates: Int = 0
     @volatile var state: Activity.State[NameTree[Name]] = Activity.Pending
-    val _ = namer.lookup(Path.read("/srv/http/sessions")).states.respond { s =>
+    val _ = namer.lookup(Path.read(name)).states.respond { s =>
       state = s
+      stateUpdates += 1
     }
+
+    def addrs = state match {
+      case Activity.Ok(NameTree.Leaf(bound: Name.Bound)) =>
+        bound.addr.sample() match {
+          case Addr.Bound(addrs, _) =>
+            addrs
+          case addr =>
+            throw new TestFailedException(s"expected bound addr, got $addr", 1)
+        }
+      case v =>
+        throw new TestFailedException(s"unexpected state: $v", 1)
+    }
+
     def assertHas(n: Int): Unit =
-      state match {
-        case Activity.Ok(NameTree.Leaf(bound: Name.Bound)) =>
-          bound.addr.sample() match {
-            case Addr.Bound(addrs, _) =>
-              assert(addrs.size == n)
-            case addr =>
-              throw new TestFailedException(s"expected bound addr, got $addr", 1)
-          }
-        case v =>
-          throw new TestFailedException(s"unexpected state: $v", 1)
-      }
+      assert(addrs.size == n)
   }
 
   test("watches a namespace and receives updates") {
@@ -120,7 +127,7 @@ class EndpointsNamerTest extends FunSuite with Awaits {
         fail(s"unexpected request: $req")
     }
     val api = v1.Api(service)
-    val namer = new EndpointsNamer(Path.read("/test"), api.withNamespace)
+    val namer = new EndpointsNamer(Path.read("/test"), None, api.withNamespace)
 
     @volatile var state: Activity.State[NameTree[Name]] = Activity.Pending
     val _ = namer.lookup(Path.read("/srv/thrift/sessions")).states respond { s =>
@@ -142,6 +149,68 @@ class EndpointsNamerTest extends FunSuite with Awaits {
       doInit = new Promise[Unit]
 
       doFail.setDone()
+
+      doScaleDown.setDone()
+      assertHas(3)
+    }
+  }
+
+  test("sets labelSelector if not None ") {
+    @volatile var req: Request = null
+
+    val service = Service.mk[Request, Response] {
+      case r =>
+        req = r
+        val rsp = Response()
+        rsp.content = Rsps.Init
+        Future.value(rsp)
+    }
+
+    val api = v1.Api(service)
+    val namer = new EndpointsNamer(Path.read("/test"), Some("versionLabel"), api.withNamespace)
+    namer.lookup(Path.read("/srv/thrift/sessions/d3adb33f"))
+
+    assert(req.uri == "/api/v1/namespaces/srv/endpoints?watch=true&labelSelector=versionLabel%3Dd3adb33f&resourceVersion=5319481")
+  }
+
+  test("NameTree doesn't update on endpoint change") {
+    val _ = new Fixtures {
+      assert(state == Activity.Pending)
+      doInit.setDone()
+      assertHas(3)
+      assert(stateUpdates == 2)
+
+      doScaleUp.setDone()
+      assertHas(4)
+      assert(stateUpdates == 2)
+
+      doScaleDown.setDone()
+      assertHas(3)
+      assert(stateUpdates == 2)
+    }
+  }
+
+  test("namer accepts port numbers") {
+    val _ = new Fixtures {
+
+      override def name = "/srv/54321/sessions"
+
+      assert(state == Activity.Pending)
+      doInit.setDone()
+
+      assert(addrs == Set(Address("10.248.4.9", 54321), Address("10.248.8.9", 54321), Address("10.248.7.11", 54321)))
+    }
+  }
+
+  test("namer is case insensitive") {
+    val _ = new Fixtures {
+      override def name = "/sRv/HtTp/SeSsIoNs"
+      assert(state == Activity.Pending)
+      doInit.setDone()
+      assertHas(3)
+
+      doScaleUp.setDone()
+      assertHas(4)
 
       doScaleDown.setDone()
       assertHas(3)

@@ -1,14 +1,32 @@
 package io.buoyant.linkerd.admin
 
-import com.twitter.finagle.http.{MediaType, Request, Response}
-import com.twitter.finagle.{Service, SimpleFilter}
+import com.twitter.finagle.http.{MediaType, Response}
 import com.twitter.util.Future
-import io.buoyant.admin.HtmlView
-import io.buoyant.linkerd.Build
+import io.buoyant.admin.Admin.NavItem
+import io.buoyant.admin.{Build, HtmlView}
 
-object AdminHandler extends HtmlView {
+class AdminHandler(navItems: Seq[NavItem]) extends HtmlView {
 
-  val navBar =
+  private[this] val build = Build.load("/io/buoyant/linkerd/build.properties")
+
+  private[this] def navHtml(highlightedItem: String = "") = navItems.map { item =>
+    val activeClass = if (item.name == highlightedItem) "active" else ""
+    s"""<li class=$activeClass><a href="${item.url}">${item.name}</a></li>"""
+  }.mkString("\n")
+
+  def navBar(highlightedItem: String = "", showRouterDropdown: Boolean = false) = {
+    val routerDropdown = if (showRouterDropdown) {
+      """
+      <li class="dropdown">
+        <a href="#" class="dropdown-toggle" data-toggle="dropdown" role="button" aria-haspopup="true" aria-expanded="false">
+          <span class="router-label">all</span> <span class="caret"></span>
+        </a>
+        <ul class="dropdown-menu">
+        </ul>
+      </li>
+      """
+    } else ""
+
     s"""<nav class="navbar navbar-inverse">
       <div class="navbar-container">
         <div class="navbar-header">
@@ -19,29 +37,22 @@ object AdminHandler extends HtmlView {
             <span class="icon-bar"></span>
           </button>
 
-          <a class="navbar-brand-img" href="/">
-            <img alt="Logo" src="/files/images/linkerd-horizontal-white-transbg-vectorized.svg">
+          <a class="navbar-brand" href=".">
+            <img alt="Logo" src="files/images/linkerd-horizontal-white-transbg-vectorized.svg">
           </a>
         </div>
         <div id="navbar" class="collapse navbar-collapse">
           <ul class="nav navbar-nav">
-            <li><a href="/delegator">dtab</a></li>
-            <li><a href="/admin/logging">logging</a></li>
-            <li><a href="/help">help</a></li>
+          ${navHtml(highlightedItem)}
           </ul>
           <ul class="nav navbar-nav navbar-right">
-            <li class="dropdown">
-              <a href="#" class="dropdown-toggle" data-toggle="dropdown" role="button" aria-haspopup="true" aria-expanded="false">
-                <span class="router-label">all</span> <span class="caret"></span>
-              </a>
-              <ul class="dropdown-menu">
-              </ul>
-            </li>
-            <li>version ${Build.load().version}</li>
+            ${routerDropdown}
+            <li class="version">version ${build.version}</li>
           </ul>
         </div>
       </div>
     </nav>"""
+  }
 
   def mkResponse(
     content: String,
@@ -57,15 +68,11 @@ object AdminHandler extends HtmlView {
     content: String,
     tailContent: String = "",
     csses: Seq[String] = Nil,
-    javaScripts: Seq[String] = Nil,
-    navbar: String = navBar
+    navHighlight: String = "",
+    showRouterDropdown: Boolean = false
   ): String = {
     val cssesHtml = csses.map { css =>
-      s"""<link type="text/css" href="/files/css/$css" rel="stylesheet"/>"""
-    }.mkString("\n")
-
-    val javaScriptsHtml = javaScripts.map { js =>
-      s"""<script src="/files/js/$js"></script>"""
+      s"""<link type="text/css" href="files/css/$css" rel="stylesheet"/>"""
     }.mkString("\n")
 
     s"""
@@ -73,28 +80,23 @@ object AdminHandler extends HtmlView {
       <html>
         <head>
           <title>linkerd admin</title>
-          <link type="text/css" href="/files/css/lib/bootstrap.min.css" rel="stylesheet"/>
-          <link type="text/css" href="/files/css/dashboard.css" rel="stylesheet"/>
-          <link rel="shortcut icon" href="/files/images/favicon.png" />
-          <link href='https://fonts.googleapis.com/css?family=Source+Sans+Pro:400,300,600' rel='stylesheet' type='text/css'>
+          <link type="text/css" href="files/css/lib/bootstrap.min.css" rel="stylesheet"/>
+          <link type="text/css" href="files/css/fonts.css" rel="stylesheet"/>
+          <link type="text/css" href="files/css/dashboard.css" rel="stylesheet"/>
+          <link type="text/css" href="files/css/logger.css" rel="stylesheet"/>
+          <link rel="shortcut icon" href="files/images/favicon.png" />
           $cssesHtml
         </head>
         <body>
-          $navbar
+          ${navBar(navHighlight, showRouterDropdown)}
 
           <div class="container-fluid">
             $content
           </div>
-
           $tailContent
 
-          <script src="/files/js/lib/jquery.min.js"></script>
-          <script src="/files/js/lib/bootstrap.min.js"></script>
-          <script src="/files/js/lib/lodash.min.js"></script>
-          <script src="/files/js/lib/handlebars-v4.0.5.js"></script>
-          <script src="/files/js/admin.js"></script>
-          <script src="/files/js/query.js"></script>
-          $javaScriptsHtml
+          <script data-main="files/js/main-linkerd" src="files/js/lib/require.js"></script>
+
         </body>
       </html>
     """

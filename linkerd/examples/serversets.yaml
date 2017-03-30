@@ -1,3 +1,5 @@
+# Do service discovery lookups against the zookeeper serversets API.  This
+# config will also announce its address to zookeeper serversets.
 namers:
 - kind: io.l5d.serversets
   zkAddrs:
@@ -12,9 +14,8 @@ routers:
     - host: 127.0.0.1
       port: 2181
     pathPrefix: /discovery/prod
-  baseDtab: |
-    /host => /#/io.l5d.serversets;
-    /http/1.1/* => /host;
+  dtab: |
+    /svc => /#/io.l5d.serversets;
   servers:
   - port: 4140
     ip: 0.0.0.0

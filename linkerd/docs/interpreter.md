@@ -10,7 +10,7 @@ routers:
     dst: /$/inet/1.2.3.4/4180
 ```
 
-An interpreter determines how names are resolved.  
+An interpreter determines how names are resolved.
 
 <aside class="notice">
 These parameters are available to the identifier regardless of kind. Identifiers may also have kind-specific parameters.
@@ -18,7 +18,7 @@ These parameters are available to the identifier regardless of kind. Identifiers
 
 Key | Default Value | Description
 --- | ------------- | -----------
-kind | `default` | Either `default`, `io.l5d.namerd`, or `io.l5d.fs`.
+kind | `default` | Either [`default`](#default), [`io.l5d.namerd`](#namerd), or [`io.l5d.fs`](#file-system).
 transformers | No transformers | A list of [transformers](#transformer) to apply to the resolved addresses.
 
 ## Default
@@ -32,15 +32,22 @@ The default interpreter resolves names via the configured
 ## namerd
 
 kind: `io.l5d.namerd`
+kind: `io.l5d.namerd.http`
 
 The namerd interpreter offloads the responsibilities of name resolution to the
-namerd service.  Any namers configured in this linkerd are not used.
+namerd service.  Any namers configured in this linkerd are not used.  The
+`io.l5d.namerd` interpreter uses namerd's long-poll thrift interface and the
+`io.l5d.namerd.http` interpreter uses namerd's HTTP streaming interface.  Note
+that the protocol that the interpreter uses to talk to namerd is unrelated to
+the protocols of linkerd's routers.
 
 Key | Default Value | Description
 --- | ------------- | -----------
+experimental | _required_ | Because the http version is still considered experimental, you must set this to `true` to use it.
 dst | _required_ | A Finagle path locating the namerd service.
 namespace | `default` | The name of the namerd dtab to use.
 retry | see [namerd retry](#namerd-retry) | An object configuring retry backoffs for requests to namerd.
+tls | no tls | Requests to namerd will be made using TLS if this parameter is provided.  It must be a [namerd client TLS](#namerd-client-tls) object.
 
 ### namerd retry
 
@@ -48,6 +55,13 @@ Key | Default Value | Description
 --- | ------------- | -----------
 baseSeconds | 5 seconds | The base number of seconds to wait before retrying.
 maxSeconds | 10 minutes | The maximum number of seconds to wait before retrying.
+
+### namerd client tls
+
+Key | Default Value | Description
+--- | ------------- | -----------
+commonName | _required_ | The common name to use for namerd requests.
+caCert | N/A | The path to the CA cert used for common name validation.
 
 ## File-System
 

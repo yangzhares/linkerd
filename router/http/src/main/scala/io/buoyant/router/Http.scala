@@ -14,13 +14,14 @@ object Http extends Router[Request, Response] with FinagleServer[Request, Respon
   object param {
     case class HttpIdentifier(id: (Path, () => Dtab) => RoutingFactory.Identifier[fhttp.Request])
     implicit object HttpIdentifier extends Stack.Param[HttpIdentifier] {
-      val default = HttpIdentifier(MethodAndHostIdentifier.mk)
+      val default = HttpIdentifier(HeaderIdentifier.default)
     }
   }
 
   object Router {
     val pathStack: Stack[ServiceFactory[Request, Response]] =
-      StripConnectionHeader.module +:
+      ViaHeaderAppenderFilter.module +:
+        StripHopByHopHeadersFilter.module +:
         StackRouter.newPathStack[Request, Response]
 
     val boundStack: Stack[ServiceFactory[Request, Response]] =
@@ -36,8 +37,8 @@ object Http extends Router[Request, Response] with FinagleServer[Request, Respon
 
     val defaultParams: Stack.Params =
       StackRouter.defaultParams +
-        FinagleHttp.param.Streaming(true) +
-        FinagleHttp.param.Decompression(false) +
+        fhttp.param.Streaming(true) +
+        fhttp.param.Decompression(false) +
         ProtocolLibrary("http")
   }
 
@@ -68,13 +69,13 @@ object Http extends Router[Request, Response] with FinagleServer[Request, Respon
 
   object Server {
     val stack: Stack[ServiceFactory[Request, Response]] =
-      (ForwardedFilter.module +: FinagleHttp.Server.stack)
+      (AddForwardedHeader.module +: FinagleHttp.Server.stack)
         .insertBefore(http.TracingFilter.role, ProxyRewriteFilter.module)
 
     val defaultParams: Stack.Params =
       StackServer.defaultParams +
-        FinagleHttp.param.Streaming(true) +
-        FinagleHttp.param.Decompression(false) +
+        fhttp.param.Streaming(true) +
+        fhttp.param.Decompression(false) +
         ProtocolLibrary("http")
   }
 

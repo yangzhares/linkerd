@@ -3,7 +3,7 @@ package io.buoyant.linkerd.protocol
 import com.twitter.conversions.storage._
 import com.twitter.conversions.time._
 import com.twitter.finagle.{Service, ServiceFactory, Stack, param}
-import com.twitter.finagle.Http.{param => hparam}
+import com.twitter.finagle.http.{param => hparam}
 import com.twitter.finagle.http.{Request, Response, Status, Version}
 import com.twitter.finagle.service.{Retries, RetryBudget}
 import com.twitter.finagle.stack.nilStack
@@ -149,7 +149,7 @@ class HttpInitializerTest extends FunSuite with Awaits with Eventually {
       .configured(maxChunkSize).configured(maxHeaderSize).configured(maxInitLineSize)
       .configured(maxReqSize).configured(maxRspSize)
       .configured(streaming).configured(compression)
-      .serving(HttpServerConfig(None).mk(HttpInitializer, "yolo"))
+      .serving(HttpServerConfig(None, None).mk(HttpInitializer, "yolo"))
       .initialize()
     assert(router.servers.size == 1)
     val sparams = router.servers.head.params

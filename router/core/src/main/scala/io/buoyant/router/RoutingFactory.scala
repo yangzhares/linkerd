@@ -16,6 +16,42 @@ object RoutingFactory {
    */
   type Identifier[Req] = Req => Future[RequestIdentification[Req]]
 
+  object Identifier {
+
+    def compose[Req](hd: Identifier[Req], tl: Identifier[Req]*): Identifier[Req] =
+      (req: Req) => fold(req, hd, tl)
+
+    /**
+     * Apply each identifier in order until the request is identified.
+     *
+     * Identifier list must not be empty.
+     */
+    def compose[Req](all: Seq[Identifier[Req]]): Identifier[Req] = all match {
+      case Nil => throw new IllegalArgumentException("empty identifier list")
+      case Seq(identifier) => identifier
+      case Seq(hd, tl@_*) => (req: Req) => fold(req, hd, tl)
+    }
+
+    /**
+     * Apply each identifier to the request in order until the request
+     * is identified or identifiers are exhausted.
+     */
+    private[this] def fold[Req](
+      req: Req,
+      hd: Identifier[Req],
+      tl: Seq[Identifier[Req]]
+    ): Future[RequestIdentification[Req]] =
+      tl match {
+        case Nil => hd(req)
+        case Seq(nextHd, nextTl@_*) =>
+          hd(req).flatMap {
+            case id: IdentifiedRequest[Req] => Future.value(id)
+            case _: UnidentifiedRequest[Req] => fold(req, nextHd, nextTl)
+          }
+      }
+
+  }
+
   /** The result of attempting to identify a request. */
   sealed trait RequestIdentification[Req]
 
@@ -27,10 +63,10 @@ object RoutingFactory {
    *                identifiers to effectively mutate requests that they
    *                identify.
    */
-  class IdentifiedRequest[Req](val dst: Dst, val request: Req) extends RequestIdentification[Req]
+  class IdentifiedRequest[Req](val dst: Dst.Path, val request: Req) extends RequestIdentification[Req]
 
   object IdentifiedRequest {
-    def unapply[Req](identified: IdentifiedRequest[Req]): Option[(Dst, Req)] =
+    def unapply[Req](identified: IdentifiedRequest[Req]): Option[(Dst.Path, Req)] =
       Some((identified.dst, identified.request))
   }
 
@@ -51,7 +87,7 @@ object RoutingFactory {
    */
   case class DstPrefix(path: Path)
   implicit object DstPrefix extends Stack.Param[DstPrefix] {
-    val default = DstPrefix(Path.empty)
+    val default = DstPrefix(Path.Utf8("svc"))
   }
 
   /**
@@ -116,8 +152,6 @@ class RoutingFactory[Req, Rsp](
 
     def apply(req0: Req): Future[Rsp] = {
       if (Trace.isActivelyTracing) {
-        // we treat the router label as the rpc name for this span
-        Trace.recordRpc(label)
         Trace.recordBinary("router.label", label)
       }
 

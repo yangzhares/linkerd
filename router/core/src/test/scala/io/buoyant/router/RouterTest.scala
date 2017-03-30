@@ -10,13 +10,12 @@ import com.twitter.finagle.stats.InMemoryStatsReceiver
 import com.twitter.finagle.transport.Transport
 import com.twitter.util.{Activity, Duration, Future, MockTimer, Return, Throw, Time, Try, Var}
 import io.buoyant.router.RoutingFactory.IdentifiedRequest
-import io.buoyant.test.{Exceptions, Awaits}
+import io.buoyant.test.FunSuite
 import java.util.concurrent.atomic.AtomicInteger
-import org.scalatest.FunSuite
 
 // This is a sort of end-to-end test, but is intended to improve test
 // coverage of Router.scala
-class RouterTest extends FunSuite with Awaits with Exceptions {
+class RouterTest extends FunSuite {
 
   val strToInt = Service.mk[String, Int] { s => Future(s.toInt) }
   val strToIntFactory = ServiceFactory.const(strToInt)
@@ -119,9 +118,8 @@ class RouterTest extends FunSuite with Awaits with Exceptions {
     val namer = new NameInterpreter {
       def bind(dtab: Dtab, path: Path): Activity[NameTree[Name.Bound]] = {
         val id: Any = path match {
-          case Path.Utf8("0") => Path.Utf8("some", "path")
-          case Path.Utf8("1") => "string"
-          case Path.Utf8("2") => null
+          case Path.Utf8("svc", "0") => Path.Utf8("some", "path")
+          case Path.Utf8("svc", "1") => "string"
           case _ => new {}
         }
         Activity.value(NameTree.Leaf(Name.Bound(Var.value(Addr.Pending), id)))
@@ -141,10 +139,6 @@ class RouterTest extends FunSuite with Awaits with Exceptions {
     label = None
     assert(await(service("1")) == 1)
     assert(label == Some("string"))
-
-    label = None
-    assert(await(service("2")) == 2)
-    assert(label == Some("null"))
 
     label = None
     assert(await(service("3")) == 3)

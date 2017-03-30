@@ -1,19 +1,23 @@
 package io.buoyant.linkerd
 
-import com.twitter.finagle.{Service, http}
+import com.twitter.conversions.time._
 import com.twitter.finagle.buoyant.DstBindingFactory
 import com.twitter.finagle.naming.NameInterpreter
-import com.twitter.finagle.{param, Path, Namer, Stack}
+import com.twitter.finagle.param.Label
 import com.twitter.finagle.stats.{BroadcastStatsReceiver, LoadedStatsReceiver}
-import com.twitter.finagle.tracing.{DefaultTracer, BroadcastTracer, Tracer}
-import com.twitter.finagle.util.LoadService
+import com.twitter.finagle.tracing.{BroadcastTracer, DefaultTracer, Tracer}
+import com.twitter.finagle.util.{DefaultTimer, LoadService}
+import com.twitter.finagle.{Namer, Path, Stack, param => fparam}
 import com.twitter.logging.Logger
-import io.buoyant.admin.{AdminConfig, Admin}
+import com.twitter.server.util.JvmStats
+import io.buoyant.admin.{Admin, AdminConfig}
 import io.buoyant.config._
-import io.buoyant.config.types.Port
 import io.buoyant.namer.Param.Namers
 import io.buoyant.namer._
+import io.buoyant.linkerd.telemeter.UsageDataTelemeterConfig
 import io.buoyant.telemetry._
+import io.buoyant.telemetry.admin.{AdminMetricsExportTelemeter, histogramSnapshotInterval}
+import java.net.InetSocketAddress
 import scala.util.control.NoStackTrace
 
 /**
@@ -31,8 +35,8 @@ trait Linker {
 object Linker {
   private[this] val log = Logger()
 
-  private[this] val DefaultAdminPort = Port(9990)
-  private[this] val DefaultAdminConfig = AdminConfig(Some(DefaultAdminPort))
+  private[this] val DefaultAdminAddress = new InetSocketAddress(9990)
+  private[this] val DefaultAdminConfig = AdminConfig()
 
   private[linkerd] case class Initializers(
     protocol: Seq[ProtocolInitializer] = Nil,
@@ -40,14 +44,14 @@ object Linker {
     interpreter: Seq[InterpreterInitializer] = Nil,
     transformer: Seq[TransformerInitializer] = Nil,
     tlsClient: Seq[TlsClientInitializer] = Nil,
-    tracer: Seq[TracerInitializer] = Nil,
     identifier: Seq[IdentifierInitializer] = Nil,
     classifier: Seq[ResponseClassifierInitializer] = Nil,
     telemetry: Seq[TelemeterInitializer] = Nil,
-    announcer: Seq[AnnouncerInitializer] = Nil
+    announcer: Seq[AnnouncerInitializer] = Nil,
+    failureAccrual: Seq[FailureAccrualInitializer] = Nil
   ) {
     def iter: Iterable[Seq[ConfigInitializer]] =
-      Seq(protocol, namer, interpreter, tlsClient, tracer, identifier, transformer, classifier, telemetry, announcer)
+      Seq(protocol, namer, interpreter, tlsClient, identifier, transformer, classifier, telemetry, announcer, failureAccrual)
 
     def all: Seq[ConfigInitializer] = iter.flatten.toSeq
 
@@ -64,11 +68,11 @@ object Linker {
     LoadService[InterpreterInitializer] :+ DefaultInterpreterInitializer,
     LoadService[TransformerInitializer],
     LoadService[TlsClientInitializer],
-    LoadService[TracerInitializer],
     LoadService[IdentifierInitializer],
     LoadService[ResponseClassifierInitializer],
     LoadService[TelemeterInitializer],
-    LoadService[AnnouncerInitializer]
+    LoadService[AnnouncerInitializer],
+    LoadService[FailureAccrualInitializer]
   )
 
   def parse(
@@ -85,56 +89,70 @@ object Linker {
   def load(config: String): Linker =
     load(config, LoadedInitializers)
 
+  object param {
+
+    case class LinkerConfig(config: Linker.LinkerConfig)
+
+    implicit object LinkerConfig extends Stack.Param[LinkerConfig] {
+      val default = LinkerConfig(Linker.LinkerConfig(None, Seq(), None, None, None))
+    }
+
+  }
+
   case class LinkerConfig(
     namers: Option[Seq[NamerConfig]],
     routers: Seq[RouterConfig],
-    tracers: Option[Seq[TracerConfig]],
     telemetry: Option[Seq[TelemeterConfig]],
-    admin: Option[AdminConfig]
+    admin: Option[AdminConfig],
+    usage: Option[UsageDataTelemeterConfig]
   ) {
 
-    def mk(defaultTelemeter: Telemeter = NullTelemeter): Linker = {
+    def mk(): Linker = {
       // At least one router must be specified
       if (routers.isEmpty) throw NoRoutersSpecified
 
-      val telemeters = telemetry match {
-        case None => Seq(defaultTelemeter)
-        case Some(telemeters) => telemeters.map(_.mk(Stack.Params.empty))
-      }
+      val metrics = MetricsTree()
+
+      val telemeterParams = Stack.Params.empty + param.LinkerConfig(this) + metrics
+      val adminTelemeter = new AdminMetricsExportTelemeter(metrics, histogramSnapshotInterval(), DefaultTimer.twitter)
+      val usageTelemeter = usage.getOrElse(UsageDataTelemeterConfig()).mk(telemeterParams)
+
+      val telemeters = telemetry.toSeq.flatten.map {
+        case t if t.disabled =>
+          val msg = s"The ${t.getClass.getCanonicalName} telemeter is experimental and must be " +
+            "explicitly enabled by setting the `experimental' parameter to `true'."
+          throw new IllegalArgumentException(msg) with NoStackTrace
+        case t => t.mk(telemeterParams)
+      } :+ adminTelemeter :+ usageTelemeter
 
       // Telemeters may provide StatsReceivers.
-      val stats = mkStats(telemeters)
+      val stats = mkStats(metrics, telemeters)
       LoadedStatsReceiver.self = stats
+      JvmStats.register(stats)
 
-      // Tracers may be provided by telemeters OR by 'tracers'
-      // configuration.
-      //
-      // TODO the TracerInitializer API should be killed and these
-      // modules should be converted to Telemeters.
       val tracer = mkTracer(telemeters)
       DefaultTracer.self = tracer
 
-      val params = Stack.Params.empty + param.Tracer(tracer) + param.Stats(stats)
+      val params = Stack.Params.empty + fparam.Tracer(tracer) + fparam.Stats(stats)
 
-      val namersByPrefix = mkNamers(params + param.Stats(stats.scope("namer")))
+      val namersByPrefix = mkNamers(params + fparam.Stats(stats.scope("namer")))
       NameInterpreter.setGlobal(ConfiguredNamersInterpreter(namersByPrefix))
 
-      val routerImpls = mkRouters(params + Namers(namersByPrefix) + param.Stats(stats.scope("rt")))
+      val routerImpls = mkRouters(params + Namers(namersByPrefix) + fparam.Stats(stats.scope("rt")))
 
-      val adminImpl = admin.getOrElse(DefaultAdminConfig).mk(DefaultAdminPort)
+      val adminImpl = admin.getOrElse(DefaultAdminConfig).mk(DefaultAdminAddress)
 
       Impl(routerImpls, namersByPrefix, tracer, telemeters, adminImpl)
     }
 
-    private[this] def mkStats(telemeters: Seq[Telemeter]) = {
-      val receivers = telemeters.collect { case t if !t.stats.isNull => t.stats }
+    private[this] def mkStats(metrics: MetricsTree, telemeters: Seq[Telemeter]) = {
+      val receivers = telemeters.collect { case t if !t.stats.isNull => t.stats } :+ new MetricsTreeStatsReceiver(metrics)
       for (r <- receivers) log.debug("stats: %s", r)
       BroadcastStatsReceiver(receivers)
     }
 
     private[this] def mkTracer(telemeters: Seq[Telemeter]) = {
-      val all = tracers.getOrElse(Nil).map(_.newTracer()) ++
-        telemeters.collect { case t if !t.tracer.isNull => t.tracer }
+      val all = telemeters.collect { case t if !t.tracer.isNull => t.tracer }
       for (t <- all) log.info("tracer: %s", t)
       BroadcastTracer(all)
     }
@@ -146,7 +164,7 @@ object Linker {
             "explicitly enabled by setting the `experimental' parameter to `true'."
           throw new IllegalArgumentException(msg) with NoStackTrace
 
-        case n => n.prefix -> n.newNamer(params)
+        case n => n.prefix -> n.mk(params)
       }
     }
 
@@ -155,8 +173,16 @@ object Linker {
       for ((label, rts) <- routers.groupBy(_.label))
         if (rts.size > 1) throw ConflictingLabels(label)
 
+      for (r <- routers) {
+        if (r.disabled) {
+          val msg = s"The ${r.protocol.name} protocol is experimental and must be " +
+            "explicitly enabled by setting the `experimental' parameter to `true' on each router."
+          throw new IllegalArgumentException(msg) with NoStackTrace
+        }
+      }
+
       val impls = routers.map { router =>
-        val interpreter = router.interpreter.interpreter(params)
+        val interpreter = router.interpreter.interpreter(params + Label(router.label))
         router.router(params + DstBindingFactory.Namer(interpreter))
       }
 

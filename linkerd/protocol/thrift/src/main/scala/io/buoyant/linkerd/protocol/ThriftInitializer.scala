@@ -1,11 +1,12 @@
 package io.buoyant.linkerd
 package protocol
 
-import com.fasterxml.jackson.annotation.JsonIgnore
+import com.fasterxml.jackson.annotation.{JsonIgnore, JsonProperty}
 import com.twitter.finagle.Path
 import com.twitter.finagle.Stack.Params
 import com.twitter.finagle.Thrift.param
 import com.twitter.finagle.Thrift.param.{AttemptTTwitterUpgrade, ProtocolFactory}
+import com.twitter.finagle.buoyant.linkerd.{ThriftClientPrep, ThriftServerPrep, ThriftTraceInitializer}
 import io.buoyant.config.Parser
 import io.buoyant.config.types.ThriftProtocol
 import io.buoyant.router.{RoutingFactory, Thrift}
@@ -19,11 +20,19 @@ class ThriftInitializer extends ProtocolInitializer {
   protected type ServerReq = Array[Byte]
   protected type ServerRsp = Array[Byte]
 
-  protected val defaultRouter = Thrift.router
-    .configured(RoutingFactory.DstPrefix(Path.Utf8(name)))
+  protected val defaultRouter = {
+    val clientStack = Thrift.router.clientStack
+      .replace(ThriftClientPrep.role, ThriftClientPrep.module)
+    Thrift.router.withClientStack(clientStack)
+  }
 
   protected val adapter = Thrift.Router.IngestingFilter
-  protected val defaultServer = Thrift.server
+  protected val defaultServer = {
+    val stack = Thrift.server.stack
+      .replace(ThriftTraceInitializer.role, ThriftTraceInitializer.serverModule)
+      .replace(ThriftServerPrep.role, ThriftServerPrep.module)
+    Thrift.server.withStack(stack)
+  }
 
   override def defaultServerPort: Int = 4114
 
@@ -37,7 +46,10 @@ case class ThriftConfig(
 ) extends RouterConfig {
 
   var servers: Seq[ThriftServerConfig] = Nil
-  var client: Option[ThriftClientConfig] = None
+  @JsonProperty("client")
+  var _client: Option[ThriftClientConfig] = None
+
+  def client: Option[ThriftClientConfig] = _client.orElse(Some(ThriftClientConfig()))
 
   @JsonIgnore
   override def protocol = ThriftInitializer
@@ -57,13 +69,13 @@ case class ThriftServerConfig(
 }
 
 case class ThriftClientConfig(
-  thriftFramed: Option[Boolean],
-  thriftProtocol: Option[ThriftProtocol],
-  attemptTTwitterUpgrade: Option[Boolean]
+  thriftFramed: Option[Boolean] = None,
+  thriftProtocol: Option[ThriftProtocol] = None,
+  attemptTTwitterUpgrade: Option[Boolean] = None
 ) extends ClientConfig {
   @JsonIgnore
   override def clientParams: Params = super.clientParams
     .maybeWith(thriftFramed.map(param.Framed(_)))
-    .maybeWith(thriftProtocol.map(proto => param.ProtocolFactory(proto.factory)))
-    .maybeWith(attemptTTwitterUpgrade.map(AttemptTTwitterUpgrade(_)))
+    .maybeWith(thriftProtocol.map(proto => param.ProtocolFactory(proto.factory))) +
+    AttemptTTwitterUpgrade(attemptTTwitterUpgrade.getOrElse(false))
 }

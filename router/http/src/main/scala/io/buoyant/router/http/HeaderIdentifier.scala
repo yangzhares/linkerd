@@ -1,15 +1,16 @@
 package io.buoyant.router.http
 
-import com.twitter.finagle.http.Request
-import com.twitter.finagle.{Path, Dtab}
+import com.twitter.finagle.http.{Fields, Request}
+import com.twitter.finagle.{Dtab, Path}
 import com.twitter.finagle.buoyant.Dst
-import com.twitter.util.{Try, Future}
+import com.twitter.util.{Future, Try}
 import io.buoyant.router.RoutingFactory
-import io.buoyant.router.RoutingFactory.{UnidentifiedRequest, IdentifiedRequest, RequestIdentification}
+import io.buoyant.router.RoutingFactory.{IdentifiedRequest, RequestIdentification, UnidentifiedRequest}
 
 case class HeaderIdentifier(
   prefix: Path,
   header: String,
+  headerPath: Boolean,
   baseDtab: () => Dtab = () => Dtab.base
 ) extends RoutingFactory.Identifier[Request] {
 
@@ -17,7 +18,7 @@ case class HeaderIdentifier(
     req.headerMap.get(header) match {
       case Some(value) =>
         val identified = Try {
-          val path = Path.read(value)
+          val path = if (headerPath) Path.read(value) else Path.Utf8(value)
           val dst = Dst.Path(prefix ++ path, baseDtab(), Dtab.local)
           new IdentifiedRequest(dst, req)
         }
@@ -26,4 +27,9 @@ case class HeaderIdentifier(
         Future.value(new UnidentifiedRequest(s"$header header is absent"))
     }
   }
+}
+
+object HeaderIdentifier {
+  def default(prefix: Path, baseDtab: () => Dtab = () => Dtab.base): HeaderIdentifier =
+    new HeaderIdentifier(prefix, Fields.Host, false, baseDtab)
 }

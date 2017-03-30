@@ -1,22 +1,169 @@
-## 0.x.y
+## 0.9.1 2017-03-15
+
+* Admin dashboard:
+  * Fix display issues for long dtabs in the namerd tab.
+  * Indicate the primary path in the dtab tab.
+  * Add `tree` and `q` params to /admin/metrics.json.
+* Kubernetes:
+  * Allow k8s namer to accept port numbers.
+  * Make k8s namer case insensitive.
+  * Add k8s ingress identifiers to allow linkerd to act as an ingress controller.
+* Fix TTwitter thrift protocol upgrade bug.
+* Rewrite Location & Refresh HTTP response headers when Linkerd
+  rewrites request Host header.
+* Increase default binding cache size to reduce connection churn.
+* Fetch correct protoc version on demand.
+* Introduce the `io.l5d.mesh` linkerd interpreter and namerd iface. The mesh
+  iface exposes a gRPC API that can be used for multiplexed, streaming updates.
+  (*Experimental*)
+
+## 0.9.0 2017-02-22
+
+* Admin dashboard:
+  * Add retries stat, retry budget bar, and client pool bar.
+  * Add colored border to clients to make them easier to distinguish.
+  * Sorts clients and servers alphabetically.
+  * Displays routers in the order that they are defined.
+  * Namerd Admin now works with Dtabs of arbitrary size.
+* Naming and Routing:
+  * Rename `baseDtab` router property to `dtab`.
+  * Change the default `dstPrefix` from the protocol name to `/svc`.
+  * Change the default HTTP identifier to the `io.l5d.header.token` identifier.
+  * Add the ability to route basted on the `dest` request header when using the
+    TTwitter Thrift protocol.
+* Metrics and Tracing:
+  * Remove `io.l5d.commonMetrics` telemeter.
+  * Add `io.l5d.prometheus` telemeter.
+  * Remove the `tracers` router config in favor of the `io.l5d.zipkin` telemeter.
+  * Add opt-out usage data collection.
+* Namers:
+  * Update Marathon namer to evaluate an app's running state.
+  * Add `preferServiceAddress` option to `io.l5d.consul` namer
+  * Make `io.l5d.consul` case-insensitive
+* Add `roundRobin` as a load balancer option.
+* Add the `clearContext` server configuration option.
+* Fix query parameter decoding when rewriting proxied requests
+
+## 0.8.6 2017-01-19
+
+* Add experimental StatsD telemeter
+* Admin dashboard
+  * Add a log of recent requests
+  * Now works if served at a non-root url
+* HTTP
+  * Support the RFC 7329 `Forwarded` header
+* HTTP/2
+  * H2 clients now properly advertise support for the “http2” protocol over
+    ALPN
+* Introduce `io.buoyant.hostportPfx` and `io.buoyant.porthostPfx` namers for
+  splitting port numbers out of hostnames
+* Add the `io.l5d.rewrite` namer for arbitrary reordering of path segments
+* Bug fixes:
+  * Fix path identifier bug when slash precedes uri params
+  * Fix subdomainOfPfx handling of hostnames with port numbers
+
+## 0.8.5 2017-01-06
+
+* Introduce the grpc-gen and grpc-runtime projects, enabling code
+  generation of gRPC clients and servers for Finagle.
+* Various bug fixes to the linkerd admin dashboard.
+* The default docker images now use a 64 bit JVM.  A `-32b` docker image is
+  also availble but does not support the boringssl TLS extensions required for
+  ALPN, etc.
+* Marathon:
+  * Support "ip per task" feature
+* Client failure accrual is now configurable via the `failureAccrual` parameter
+* Add `io.l5d.namerd.http` interpreter which uses namerd's streaming HTTP api
+* linkerd now writes the local dtab to the `l5d-ctx-dtab` header instead of
+  `dtab-local`
+* Transformers:
+  * Transformers will now prepend a prefix to the id of the bound names they
+    modify.
+  * Fix localhost transformer when used on systems with unresolvable hostname.
+
+## 0.8.4 2016-12-05
+
+* Change default value of `attemptTTwitterUpgrade` to `false`
+* The `io.l5d.consul` and `io.l5d.k8s` namers are no longer experimental 🎉
+* H2 stabilization:
+  * Fix the `h2` protocol to gracefully handle connection loss and
+    stream interruption.
+  * RFC-compliant handling of connection-specific headers.
+  * Routing failures are now surfaced as REFUSED_STREAM resets.
+* Add per-logical-destination stats to each concrete client.
+* Add `io.l5d.static` identifier
+
+## 0.8.3 2016-11-07
+
+* Make several namers available to namerd that were missing
+* Fix crash when viewing the dtab playground
+* Announce to all routable addresses when announcing 0.0.0.0
+* Add experimental Apache Curator namer
+* Marathon:
+  * Add authentication support to marathon namer
+  * Add `useHealthCheck` option to marathon namer
+* Transformers:
+  * Allow transformers to be applied to namers
+  * Add Const and Replace transformers
+  * Show transformers in the delegate UI
+* Kubernetes:
+  * Add `labelSelector` option to k8s and k8s.external namers
+  * Add `hostNetwork` option to k8s transformers to support CNI environments
+
+## 0.8.2 2016-10-17
+
+* Consul namer can use `.local` to reference local agent's datacenter.
+* Add an `ip` option to admin configuration so that access to the
+  admin server may be constrained.
+* Kubernetes integration:
+  * Remove unused TLS options from the k8s storage plugin config.
+  * Add k8s external namer for routing to k8s ingress services.
+  * Improve error-handling behavior in k8s API clients.
+* Support serving the namerd namer interface over TLS.
+* Document namerd's HTTP API.
+* Improve retry metrics to include a total counter of all retry requests.
+* Fix a path-parsing bug in the io.l5d.path namer.
+* Provide a default log4j configuration so that netty logging is managed properly.
+* Improve HTTP server behavior with short-lived connections.
+* Add `io.buoyant.rinet` namer which is like `inet` but with the order
+  of host and port reversed
+* The `netty4` HTTP engine now works with TLS, supporting configurable
+  ciphers, backed by BoringSSL!
+* Introduce experimental support for the `h2` protocol, supporting gRPC! :balloon:
+
+## 0.8.1 2016-09-21
+
+* Fix missing data on the linkerd admin dashboard
+* Allow a non-default port to be specified for the etcd storage plugin
+
+## 0.8.0 2016-09-20
 
 * Allow routers to be configured with a list of identifiers.  If an identifier
   cannot assign a dest to a request, it falls back to the next one in the list.
   * **Breaking Change**: Identifier plugins must now return a
     `RequestIdentification` object.
+* Consul improvements:
+  * Improve performance by only watching services as necessary and tearing
+    down watches when they are no longer needed.
+  * Add `consistencyMode` option to `io.l5d.consul` namer
+  * Add `readConsistencyMode` and `writeConsistencyMode` options to
+    `io.l5d.consul` dtab storage
+  * Consul Namerd/DtabStore: `failFast` and `failureAccrual` is now
+    disabled by default but can be enabled with the `failFast` option
 * Improve shutdown ordering to facilitate graceful shutdown.
+  * Gracefully shutdown on SIGINT and SIGTERM.
 * Require tracer configuration instead of falling back to
   defaults, reducing logging noise.
-* The `debugTrace` tracer configuration flag has been removed in favor
-  of the `io.l5d.tracelog` telemeter.<<<<<<< HEAD
+* **Breaking Change**: The `debugTrace` tracer configuration flag has been
+  removed in favor of the `io.l5d.tracelog` telemeter.
 * Add `io.l5d.header` identifier for naming requests based on an HTTP header
 * Lowercase `Host` header value in `io.l5d.methodAndHost` identifier
 * Introduce transformers for post-processing the set of addresses returned by
   an interpreter.
-* Add k8s transformers to support linkerd-to-linkerd deployments when linkerd
-  is deployed as a k8s daemonset.
-* Add `consistencyMode` option to `io.l5d.consul` namer
-* Add `readConsistencyMode` and `writeConsistencyMode` options to `io.l5d.consul` dtab storage
+  * Add k8s transformers to support linkerd-to-linkerd deployments when linkerd
+    is deployed as a k8s daemonset.
+* Remove hop-by-hop headers for better HTTP proxy compliance
+
 
 ## 0.7.5
 
@@ -41,7 +188,7 @@
   * All endpoints return json
 * Add `authority` metadata field to re-write HTTP host/:authority on demand
 * Consul improvements:
-  * Add `setHost` parameter for Consul CatalogNamer to set `authority` metadata 
+  * Add `setHost` parameter for Consul CatalogNamer to set `authority` metadata
   * Add auth `token` parameter to Consul Namer & Dtab Store
   * Add `datacenter` parameter to Consul Dtab Store
 * Add file-system based name interpreter.
@@ -217,7 +364,7 @@
 ## 0.0.10
 
 * We now support end-to-end TLS! However, verification is currently limited to
-  global certs. See  https://github.com/BuoyantIO/linkerd/issues/64 for more on
+  global certs. See  https://github.com/linkerd/linkerd/issues/64 for more on
   the upcoming roadmap.
 * Prep work for "transparent TLS". Look for this in upcoming releases.
 * Prep work for being able to generate Docker images from the repo, in service

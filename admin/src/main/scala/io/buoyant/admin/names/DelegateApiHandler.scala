@@ -8,12 +8,15 @@ import com.fasterxml.jackson.databind.annotation.JsonSerialize.Inclusion
 import com.fasterxml.jackson.databind.module.SimpleModule
 import com.fasterxml.jackson.module.scala.DefaultScalaModule
 import com.fasterxml.jackson.module.scala.experimental.ScalaObjectMapper
+import com.twitter.conversions.time._
 import com.twitter.finagle.http._
 import com.twitter.finagle.naming.NameInterpreter
-import com.twitter.finagle.{Address => FAddress, Addr => FAddr, Path, Status => _, _}
+import com.twitter.finagle.util.DefaultTimer
+import com.twitter.finagle.{Path, Addr => FAddr, Address => FAddress, Status => _, TimeoutException => _, _}
 import com.twitter.io.Buf
 import com.twitter.util._
 import io.buoyant.namer._
+import java.net.InetSocketAddress
 
 object DelegateApiHandler {
 
@@ -31,6 +34,9 @@ object DelegateApiHandler {
       case FAddress.Inet(isa, meta) => Some(Address(isa.getAddress.getHostAddress, isa.getPort, meta))
       case _ => None
     }
+
+    def toFinagle(addr: Address): FAddress =
+      FAddress.Inet(new InetSocketAddress(addr.ip, addr.port), addr.meta)
   }
 
   @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, include = JsonTypeInfo.As.PROPERTY, property = "type")
@@ -52,6 +58,13 @@ object DelegateApiHandler {
       case FAddr.Failed(e) => Failed(e.getMessage)
       case FAddr.Neg => Neg()
       case FAddr.Pending => Pending()
+    }
+
+    def toFinagle(addr: Addr): FAddr = addr match {
+      case Pending() => FAddr.Pending
+      case Neg() => FAddr.Neg
+      case Failed(cause) => FAddr.Failed(cause)
+      case Bound(addrs, meta) => FAddr.Bound(addrs.map(Address.toFinagle), meta)
     }
   }
 
@@ -77,7 +90,8 @@ object DelegateApiHandler {
     new JsonSubTypes.Type(value = classOf[JsonDelegateTree.Delegate], name = "delegate"),
     new JsonSubTypes.Type(value = classOf[JsonDelegateTree.Leaf], name = "leaf"),
     new JsonSubTypes.Type(value = classOf[JsonDelegateTree.Alt], name = "alt"),
-    new JsonSubTypes.Type(value = classOf[JsonDelegateTree.Union], name = "union")
+    new JsonSubTypes.Type(value = classOf[JsonDelegateTree.Union], name = "union"),
+    new JsonSubTypes.Type(value = classOf[JsonDelegateTree.Transformation], name = "transformation")
   ))
   sealed trait JsonDelegateTree
   object JsonDelegateTree {
@@ -90,6 +104,7 @@ object DelegateApiHandler {
     case class Alt(path: Path, dentry: Option[Dentry], alt: Seq[JsonDelegateTree]) extends JsonDelegateTree
     case class Union(path: Path, dentry: Option[Dentry], union: Seq[Weighted]) extends JsonDelegateTree
     case class Weighted(weight: Double, tree: JsonDelegateTree)
+    case class Transformation(path: Path, name: String, bound: Bound, tree: JsonDelegateTree) extends JsonDelegateTree
 
     private[this] val fail = Path.read("/$/fail")
 
@@ -117,6 +132,56 @@ object DelegateApiHandler {
         Future.collect(weights).map(JsonDelegateTree.Union(p, mkDentry(d), _))
       case DelegateTree.Leaf(p, d, b) =>
         Bound.mk(p, b).map(JsonDelegateTree.Leaf(p, mkDentry(d), _))
+      case DelegateTree.Transformation(p, n, b, t) =>
+        mk(t).join(Bound.mk(p, b)).map {
+          case (tree, bound) =>
+            JsonDelegateTree.Transformation(p, n, bound, tree)
+        }
+    }
+
+    def parseBound(bound: Bound): Name.Bound = Name.Bound(Var(Addr.toFinagle(bound.addr)), bound.id, bound.path)
+
+    def toDelegateTree(jdt: JsonDelegateTree): DelegateTree[Name.Bound] = jdt match {
+      case Empty(p, d) =>
+        DelegateTree.Empty(p, d.getOrElse(Dentry.nop))
+      case Fail(p, d) =>
+        DelegateTree.Fail(Path.read(p), d.getOrElse(Dentry.nop))
+      case Neg(p, d) =>
+        DelegateTree.Neg(Path.read(p), d.getOrElse(Dentry.nop))
+      case Exception(p, d, msg) =>
+        DelegateTree.Exception(p, d.getOrElse(Dentry.nop), new java.lang.Exception(msg))
+      case Delegate(p, d, delegate) =>
+        DelegateTree.Delegate(p, d.getOrElse(Dentry.nop), toDelegateTree(delegate))
+      case Leaf(p, d, bound) =>
+        DelegateTree.Leaf(p, d.getOrElse(Dentry.nop), parseBound(bound))
+      case Alt(p, d, alts) =>
+        DelegateTree.Alt(p, d.getOrElse(Dentry.nop), alts.map(toDelegateTree): _*)
+      case Union(p, d, weighteds) =>
+        val delegateTreeWeighteds = weighteds.map {
+          case Weighted(w, tree) =>
+            DelegateTree.Weighted(w, toDelegateTree(tree))
+        }
+        DelegateTree.Union(p, d.getOrElse(Dentry.nop), delegateTreeWeighteds: _*)
+      case Transformation(p, name, bound, tree) =>
+        DelegateTree.Transformation(p, name, parseBound(bound), toDelegateTree(tree))
+    }
+
+    def toNameTree(d: JsonDelegateTree): NameTree[Name.Bound] = d match {
+      case Empty(_, _) => NameTree.Empty
+      case Fail(_, _) => NameTree.Fail
+      case Neg(_, _) => NameTree.Neg
+      case Exception(_, _, msg) => throw new IllegalStateException(msg)
+      case Delegate(_, _, delegate) => toNameTree(delegate)
+      case Leaf(_, _, bound) =>
+        NameTree.Leaf(Name.Bound(Var(Addr.toFinagle(bound.addr)), bound.id, bound.path))
+      case Alt(_, _, alts) => NameTree.Alt(alts.map(toNameTree): _*)
+      case Union(_, _, weighteds) =>
+        val nameTreeWeighteds = weighteds.map {
+          case Weighted(w, tree) =>
+            NameTree.Weighted(w, toNameTree(tree))
+        }
+        NameTree.Union(nameTreeWeighteds: _*)
+      case Transformation(_, _, _, tree) => toNameTree(tree)
     }
 
     def mkDentry(d: Dentry): Option[Dentry] = Some(d).filterNot(Dentry.equiv.equiv(Dentry.nop, _))
@@ -164,14 +229,18 @@ object DelegateApiHandler {
       module
     }
 
-    private[this] val mapper = new ObjectMapper with ScalaObjectMapper
+    val mapper = new ObjectMapper with ScalaObjectMapper
     mapper.registerModule(DefaultScalaModule)
     mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-    mapper.setSerializationInclusion(JsonInclude.Include.NON_NULL)
+    mapper.setSerializationInclusion(JsonInclude.Include.NON_ABSENT)
     mapper.registerModule(mkModule())
 
     def writeStr[T](t: T): String = mapper.writeValueAsString(t)
     def writeBuf[T](t: T): Buf = Buf.ByteArray.Owned(mapper.writeValueAsBytes(t))
+    def readBuf[T: Manifest](buf: Buf): Try[T] = {
+      val Buf.ByteBuffer.Owned(bb) = Buf.ByteBuffer.coerce(buf)
+      Try { mapper.readValue[T](bb.array) }
+    }
   }
 
   def getDelegateRsp(dtab: String, path: String, delegator: Delegator): Future[Response] = {
@@ -186,6 +255,9 @@ object DelegateApiHandler {
             rsp.content = Codec.writeBuf(tree)
             rsp.contentType = MediaType.Json
             rsp
+          }.within(2.seconds).rescue {
+            case e: TimeoutException =>
+              err(Status.ServiceUnavailable, "Request to namerd timed out.")
           }
       case (Throw(e), _) =>
         err(Status.BadRequest, s"Invalid dtab: ${e.getMessage}")
@@ -193,6 +265,31 @@ object DelegateApiHandler {
         err(Status.BadRequest, s"Invalid path: ${e.getMessage}")
     }
   }
+
+  private implicit val timer = DefaultTimer.twitter
+
+  case class DelegationRequest(
+    namespace: Option[String],
+    dtab: Option[String],
+    path: Option[String]
+  )
+
+  sealed trait DelegationRequestCodec {
+    def contentTypes: Set[String]
+    def read(buf: Buf): Try[DelegationRequest]
+  }
+
+  object DelegationRequestCodec {
+
+    object JsonCodec extends DelegationRequestCodec {
+      val contentTypes = Set(MediaType.Json)
+      def read(buf: Buf): Try[DelegationRequest] = Codec.readBuf[DelegationRequest](buf)
+    }
+
+    def byContentType(ct: String): Option[DelegationRequestCodec] =
+      if (JsonCodec.contentTypes(ct)) Some(DelegationRequestCodec.JsonCodec) else None
+  }
+
 }
 
 class DelegateApiHandler(
@@ -203,18 +300,29 @@ class DelegateApiHandler(
   import DelegateApiHandler._
 
   def apply(req: Request): Future[Response] = req.method match {
-    case Method.Get =>
-      req.params.get("namespace") match {
-        case Some(ns) =>
-          interpreters(ns) match {
-            case delegator: Delegator =>
-              getDelegateRsp(req.getParam("dtab"), req.getParam("path"), delegator)
-            case _ =>
-              err(Status.NotImplemented, s"Name Interpreter for $ns cannot show delegations")
+    case Method.Post =>
+      req.contentType.flatMap(DelegationRequestCodec.byContentType) match {
+        case Some(codec) =>
+          codec.read(req.content) match {
+            case Return(DelegationRequest(ns, Some(dtab), Some(path))) => getResponse(ns, dtab, path)
+            case _ => err(Status.BadRequest, s"Malformed delegation request: ${req.getContentString}")
           }
-        case None =>
-          getDelegateRsp(req.getParam("dtab"), req.getParam("path"), ConfiguredNamersInterpreter(namers))
+        case _ => err(Status.UnsupportedMediaType)
       }
+    case Method.Get =>
+      getResponse(req.params.get("namespace"), req.getParam("dtab"), req.getParam("path"))
     case _ => err(Status.MethodNotAllowed)
+  }
+
+  private def getResponse(ns: Option[String], dtab: String, path: String) = ns match {
+    case Some(namesapce) =>
+      interpreters(namesapce) match {
+        case delegator: Delegator =>
+          getDelegateRsp(dtab, path, delegator)
+        case _ =>
+          err(Status.NotImplemented, s"Name Interpreter for $namesapce cannot show delegations")
+      }
+    case None =>
+      getDelegateRsp(dtab, path, ConfiguredNamersInterpreter(namers))
   }
 }

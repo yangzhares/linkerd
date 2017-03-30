@@ -2,22 +2,29 @@ import sbt._
 
 object Deps {
 
+  val curatorFramework = "org.apache.curator" % "curator-framework" % "2.9.1"
+  val curatorClient = "org.apache.curator" % "curator-client" % "2.9.1"
+  val curatorDiscovery = "org.apache.curator" % "curator-x-discovery" % "2.9.1"
+
   // process lifecycle
   val twitterServer =
-    ("com.twitter" %% "twitter-server" % "1.21.0")
+    ("com.twitter" %% "twitter-server" % "1.26.0")
       .exclude("com.twitter", "finagle-zipkin_2.11")
 
   def twitterUtil(mod: String) =
-    "com.twitter" %% s"util-$mod" % "6.35.0"
+    "com.twitter" %% s"util-$mod" % "6.40.0"
 
   // networking
   def finagle(mod: String) =
-    "com.twitter" %% s"finagle-$mod" % "6.38.0-SPLAT-SNAPSHOT"
+    "com.twitter" %% s"finagle-$mod" % "6.41.0-SPLAT-SNAPSHOT"
+
+  def netty4(mod: String) =
+    "io.netty" % s"netty-$mod" % "4.1.4.Final"
 
   def zkCandidate = "com.twitter.common.zookeeper" % "candidate" % "0.0.76"
 
   // Jackson (parsing)
-  val jacksonVersion = "2.6.5"
+  val jacksonVersion = "2.8.4"
   val jacksonCore =
     "com.fasterxml.jackson.core" % "jackson-core" % jacksonVersion
   val jacksonAnnotations =
@@ -25,7 +32,7 @@ object Deps {
   val jacksonDatabind =
     "com.fasterxml.jackson.core" % "jackson-databind" % jacksonVersion
   val jacksonScala =
-    "com.fasterxml.jackson.module" %% "jackson-module-scala" % jacksonVersion 
+    "com.fasterxml.jackson.module" %% "jackson-module-scala" % jacksonVersion
   val jackson =
     jacksonCore :: jacksonAnnotations :: jacksonDatabind :: jacksonScala :: Nil
 
@@ -43,4 +50,12 @@ object Deps {
 
   // guava
   val guava = "com.google.guava" % "guava" % "19.0"
+
+  // jwt for Marathon API
+  val jwt = "com.pauldijou" %% "jwt-core" % "0.9.0"
+
+  val protobuf = "com.google.protobuf" % "protobuf-java" % "3.1.0"
+
+  // statsd client
+  val statsd = "com.datadoghq" % "java-dogstatsd-client" % "2.3"
 }

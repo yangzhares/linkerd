@@ -4,7 +4,7 @@
 namers:
 - kind: io.l5d.fs
   prefix: /thrift
-  rootDir: ./examples/io.l5d.fs
+  rootDir: linkerd/examples/io.l5d.fs
 
 # A simple thrift router that looks up each thrift method in io.l5d.fs.
 routers:
@@ -12,4 +12,9 @@ routers:
   thriftMethodInDst: true
   servers:
   - port: 4114
-    ip: 0.0.0.0
+    thriftProtocol: binary
+    thriftFramed: true
+  client:
+    thriftProtocol: binary
+    thriftFramed: true
+    attemptTTwitterUpgrade: true

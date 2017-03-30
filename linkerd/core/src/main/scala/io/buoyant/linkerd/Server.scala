@@ -2,11 +2,10 @@ package io.buoyant.linkerd
 
 import com.fasterxml.jackson.annotation.JsonIgnore
 import com.twitter.concurrent.AsyncSemaphore
-import com.twitter.finagle.Stack.{Param, Params}
 import com.twitter.finagle.filter.RequestSemaphoreFilter
 import com.twitter.finagle.ssl.Ssl
-import com.twitter.finagle.transport.Transport
-import com.twitter.finagle.{Path, ListeningServer, Stack}
+import com.twitter.finagle.transport.{TlsConfig, Transport}
+import com.twitter.finagle.{ListeningServer, Path, Stack}
 import io.buoyant.config.types.Port
 import java.net.{InetAddress, InetSocketAddress}
 
@@ -37,7 +36,6 @@ trait Server {
 object Server {
 
   case class RouterLabel(label: String)
-
   implicit object RouterLabel extends Stack.Param[RouterLabel] {
     val default = RouterLabel("")
   }
@@ -72,9 +70,9 @@ object Server {
     params: Stack.Params,
     announce: Seq[Path]
   ) extends Server {
-    override def configured[T: Param](t: T): Server = copy(params = params + t)
+    override def configured[T: Stack.Param](t: T): Server = copy(params = params + t)
 
-    override def withParams(ps: Params): Server = copy(params = ps)
+    override def withParams(ps: Stack.Params): Server = copy(params = ps)
   }
 
 }
@@ -88,19 +86,52 @@ class ServerConfig { config =>
   var maxConcurrentRequests: Option[Int] = None
   var announce: Option[Seq[String]] = None
 
-  private[this] def requestSemaphore = maxConcurrentRequests.map(new AsyncSemaphore(_, 0))
+  var clearContext: Option[Boolean] = None
+
+  private[this] def requestSemaphore =
+    maxConcurrentRequests.map(new AsyncSemaphore(_, 0))
 
   @JsonIgnore
   protected def serverParams: Stack.Params = Stack.Params.empty
-    .maybeWith(tls.map {
-      case TlsServerConfig(certPath, keyPath) => tlsParam(certPath, keyPath)
-    }) + RequestSemaphoreFilter.Param(requestSemaphore)
+    .maybeWith(tls.map(netty3Tls(_)))
+    .maybeWith(tls.map(netty4Tls(_)))
+    .maybeWith(clearContext.map(ClearContext.Enabled(_))) +
+    RequestSemaphoreFilter.Param(requestSemaphore)
 
   @JsonIgnore
-  private[this] def tlsParam(certificatePath: String, keyPath: String) =
+  private[this] def netty3Tls(c: TlsServerConfig) = {
+    assert(c.certPath != null)
+    assert(c.keyPath != null)
     Transport.TLSServerEngine(
-      Some(() => Ssl.server(certificatePath, keyPath, null, null, null))
+      Some(
+        () => Ssl.server(
+          c.certPath,
+          c.keyPath,
+          null,
+          null,
+          null
+        )
+      )
     )
+  }
+
+  @JsonIgnore
+  private[this] def netty4Tls(c: TlsServerConfig) = {
+    assert(c.certPath != null)
+    assert(c.keyPath != null)
+    Transport.Tls(
+      TlsConfig.ServerCertAndKey(
+        c.certPath,
+        c.keyPath,
+        c.caCertPath,
+        c.ciphers.map(_.mkString(":")),
+        alpnProtocols.map(_.mkString(","))
+      )
+    )
+  }
+
+  @JsonIgnore
+  def alpnProtocols: Option[Seq[String]] = None
 
   @JsonIgnore
   def mk(pi: ProtocolInitializer, routerLabel: String) = Server.Impl(
@@ -114,4 +145,9 @@ class ServerConfig { config =>
   )
 }
 
-case class TlsServerConfig(certPath: String, keyPath: String)
+case class TlsServerConfig(
+  certPath: String,
+  keyPath: String,
+  caCertPath: Option[String],
+  ciphers: Option[Seq[String]]
+)

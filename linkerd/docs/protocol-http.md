@@ -8,34 +8,17 @@ routers:
   httpAccessLog: access.log
   identifier:
     kind: io.l5d.methodAndHost
-  maxChunkKB: 8KB
-  maxHeadersKB: 8KB
-  maxInitialLineKB: 4KB
-  maxRequestKB: 5MB
-  maxResponseKB: 5MB
+  maxChunkKB: 8
+  maxHeadersKB: 8
+  maxInitialLineKB: 4
+  maxRequestKB: 5120
+  maxResponseKB: 5120
   servers:
   - port: 5000
+    addForwardedHeader:
+      by: {kind: "ip:port"}
+      for: {kind: ip}
 ```
-
-> Below: an example HTTP router config that routes all `POST` requests to 8091
-and all other requests to 8081,
-using the default identifier of `io.l5d.methodAndHost`,
-listening on port 5000
-
-```yaml
-routers:
-- protocol: http
-  label: split-get-and-post
-  baseDtab: |
-    /method/*    => /$/inet/127.1/8081;
-    /method/POST => /$/inet/127.1/8091;
-    /http/1.1    => /method;
-  servers:
-  - port: 5000
-```
-> The baseDtab above is written to work with the
-[`methodAndHost` identifier](#method-and-host-identifier).
-Using a different identifier would require a different set of dtab rules.
 
 protocol: `http`
 
@@ -45,14 +28,14 @@ This protocol has additional configuration options on the *routers* block.
 
 Key | Default Value | Description
 --- | ------------- | -----------
-dstPrefix | `http` | A path prefix used by [Http-specific identifiers](#http-1-1-identifiers).
+dstPrefix | `/svc` | A path prefix used by [Http-specific identifiers](#http-1-1-identifiers).
 httpAccessLog | none | Sets the access log path.  If not specified, no access log is written.
-identifier | The `methodAndHost` identifier | An identifier or list of identifiers.  See [Http-specific identifiers](#http-1-1-identifiers).
-maxChunkKB | 8KB | The maximum size of an HTTP chunk.
-maxHeadersKB | 8KB | The maximum size of all headers in an HTTP message.
-maxInitialLineKB | 4KB | The maximum size of an initial HTTP message line.
-maxRequestKB | 5MB | The maximum size of a non-chunked HTTP request payload.
-maxResponseKB | 5MB | The maximum size of a non-chunked HTTP response payload.
+identifier | The `io.l5d.header.token` identifier | An identifier or list of identifiers.  See [Http-specific identifiers](#http-1-1-identifiers).
+maxChunkKB | 8 | The maximum size of an HTTP chunk.
+maxHeadersKB | 8 | The maximum size of all headers in an HTTP message.
+maxInitialLineKB | 4 | The maximum size of an initial HTTP message line.
+maxRequestKB | 5120 | The maximum size of a non-chunked HTTP request payload.
+maxResponseKB | 5120 | The maximum size of a non-chunked HTTP response payload.
 compressionLevel | `-1`, automatically compresses textual content types with compression level 6 | The compression level to use (on 0-9).
 
 <aside class="warning">
@@ -60,6 +43,60 @@ These memory constraints are selected to allow reliable
 concurrent usage of linkerd. Changing these parameters may
 significantly alter linkerd's performance characteristics.
 </aside>
+
+
+<a name="http-1-1-server"></a>
+## HTTP Servers ##
+
+HTTP servers accept additional configuration parameters.
+
+> Example: default
+```
+addForwardedHeader: {}
+```
+
+Key | Default Value | Description
+--- | ------------- | -----------
+addForwardedHeader | null | If set, a `Forwarded` header is added to all requests.  See [below](#http-1-1-forwarded).
+
+<a name="http-1-1-forwarded"></a>
+### Adding the `Forwarded` header ###
+
+[RFC 7239](https://tools.ietf.org/html/rfc7239) describes how a
+`Forwarded` header may be added to requests by proxies. This RFC
+requests that this header not be added unless explicitly configured
+and that proxies obfuscate IP addresses unless explicitly configured
+to transmit them.
+
+Key | Default Value | Description
+--- | ------------- | -----------
+by  | `{kind: requestRandom}` | The [labeler](#http-1-1-forwarded-labeler) to use with the router's server address
+for | `{kind: requestRandom}` | The [labeler](#http-1-1-forwarded-labeler) to use with the upstream client's address
+
+<a name="http-1-1-forwarded-labelers"></a>
+#### Endpoint labelers ####
+
+The `Forwarded` header includes labels describing the endpoints of the
+upstream connection. Because this is sensitive information, it is
+typically randomized.
+
+> Example
+```
+addForwardedHeader:
+  for: {kind: ip}
+  by:
+    kind: static
+    label: linkerd
+```
+
+Kind | Description
+---- |
+ip | A textual IP address like `192.168.1.1` or `"[2001:db8:cafe::17]"`.
+ip:port | A textual IP:PORT address like `"192.168.1.1:80"` or `"[2001:db8:cafe::17]:80"`.
+connectionRandom | An obfuscated random label like `_6Oq8jJ` _generated for all requests on a connection_.
+**requestRandom** | An obfuscated random label like `_6Oq8jJ` _generated for each request_.
+router | Uses the router's `label` as an obfuscated static label.
+static | Accepts a `label` parameter. Produces obfuscated static labels like `_linkerd`.
 
 <a name="http-1-1-identifiers"></a>
 ## HTTP/1.1 Identifiers
@@ -71,9 +108,11 @@ this.) All HTTP/1.1 identifiers have a `kind`.  If a list of identifiers is
 provided, each identifier is tried in turn until one successfully assigns a
 logical *name* to the request.
 
+If no identifier is specified the `io.l5d.header.token` identifier is used.
+
 Key | Default Value | Description
 --- | ------------- | -----------
-kind | _required_ | Either [`io.l5d.methodAndHost`](#method-and-host-identifier) or [`io.l5d.path`](#path-identifier).
+kind | _required_ | Either [`io.l5d.methodAndHost`](#method-and-host-identifier), [`io.l5d.path`](#path-identifier), [`io.l5d.header`](#header-identifier), [`io.l5d.header.token`](#header-token-identifier), or [`io.l5d.static`](#static-identifier).
 
 <a name="method-and-host-identifier"></a>
 ### Method and Host Identifier
@@ -84,7 +123,7 @@ With this identifier, HTTP requests are turned into logical names using a
 combination of `Host` header, method, and (optionally) URI. `Host`
 header value is lower-cased as per `RFC 2616`.
 
-#### Namer Configuration:
+#### Identifier Configuration:
 
 > Configuration example
 
@@ -99,7 +138,7 @@ Key | Default Value | Description
 httpUriInDst | `false` | If `true` http paths are appended to destinations. This allows a form of path-prefix routing. This option is **not** recommended as performance implications may be severe; Use the [path identifier](#path-identifier) instead.
 
 
-#### Namer Path Parameters:
+#### Identifier Path Parameters:
 
 > Dtab Path Format for HTTP/1.1
 
@@ -115,9 +154,9 @@ httpUriInDst | `false` | If `true` http paths are appended to destinations. This
 
 Key | Default Value | Description
 --- | ------------- | -----------
-dstPrefix | `http` | The `dstPrefix` as set in the routers block.
+dstPrefix | `/svc` | The `dstPrefix` as set in the routers block.
 method | N/A | The HTTP method of the current request, ie `OPTIONS`, `GET`, `HEAD`, `POST`, `PUT`, `DELETE`, `TRACE`, or `CONNECT`.
-host | N/A | The value of the current request's Host header. [Case sensitive!](https://github.com/BuoyantIO/linkerd/issues/106). Not used in HTTP/1.0.
+host | N/A | The value of the current request's Host header. [Case sensitive!](https://github.com/linkerd/linkerd/issues/106). Not used in HTTP/1.0.
 uri | Not used | Only considered a part of the logical name if the config option `httpUriInDst` is `true`.
 
 <a name="path-identifier"></a>
@@ -129,7 +168,7 @@ With this identifier, HTTP requests are turned into names based only on the
 path component of the URL, using a configurable number of "/" separated
 segments from the start of their HTTP path.
 
-#### Namer Configuration:
+#### Identifier Configuration:
 
 > With this configuration, a request to `:5000/true/love/waits.php` will be
 mapped to `/http/true/love` and will be routed based on this name by the
@@ -153,7 +192,7 @@ Key | Default Value | Description
 segments | `1` | Number of segments from the path that are appended to destinations.
 consume | `false` | Whether to additionally strip the consumed segments from the HTTP request proxied to the final destination service. This only affects the request sent to the destination service; it does not affect identification or routing.
 
-#### Namer Path Parameters:
+#### Identifier Path Parameters:
 
 > Dtab Path Format
 
@@ -163,7 +202,7 @@ consume | `false` | Whether to additionally strip the consumed segments from the
 
 Key | Default Value | Description
 --- | ------------- | -----------
-dstPrefix | `http` | The `dstPrefix` as set in the routers block.
+dstPrefix | `/svc` | The `dstPrefix` as set in the routers block.
 urlPath | N/A | A path from the URL whose number of segments is set in the identifier block.
 
 <a name="header-identifier"></a>
@@ -172,10 +211,10 @@ urlPath | N/A | A path from the URL whose number of segments is set in the ident
 kind: `io.l5d.header`
 
 With this identifier, HTTP requests are turned into names based only on the
-value of an HTTP header.  If the header value is a valid path, that path is
-used.  Otherwise, the header value is converted to a path with one path segment.
+value of an HTTP header.  The value of the HTTP header is interpreted as a path and therefore must
+start with a `/`.
 
-#### Namer Configuration:
+#### Identifier Configuration:
 
 > With this configuration, the value of the `my-header` HTTP header will be used
 as the logical name.
@@ -194,18 +233,161 @@ Key | Default Value | Description
 --- | ------------- | -----------
 header | `l5d-name` | The name of the HTTP header to use
 
-#### Namer Path Parameters:
+#### Identifier Path Parameters:
 
 > Dtab Path Format
 
 ```
-  / dstPrefix [/ *headerValue ]
+  / dstPrefix [*headerValue ]
 ```
 
 Key | Default Value | Description
 --- | ------------- | -----------
-dstPrefix | `http` | The `dstPrefix` as set in the routers block.
+dstPrefix | `/svc` | The `dstPrefix` as set in the routers block.
 headerValue | N/A | The value of the HTTP header as a path.
+
+<a name="header-token-identifier"></a>
+### Header Token Identifier
+
+kind: `io.l5d.header.token`
+
+With this identifier, HTTP requests are turned into names based only on the
+value of an HTTP header.  The name is a path with one segment and the value of that segment is
+taken from the HTTP header.
+
+#### Identifier Configuration:
+
+> With this configuration, the value of the `my-header` HTTP header will be used
+as the logical name.
+
+```yaml
+routers:
+- protocol: http
+  identifier:
+    kind: io.l5d.header.token
+    header: my-header
+  servers:
+  - port: 5000
+```
+
+Key | Default Value | Description
+--- | ------------- | -----------
+header | `Host` | The name of the HTTP header to use
+
+#### Identifier Path Parameters:
+
+> Dtab Path Format
+
+```
+  / dstPrefix / [headerValue]
+```
+
+Key | Default Value | Description
+--- | ------------- | -----------
+dstPrefix | `/svc` | The `dstPrefix` as set in the routers block.
+headerValue | N/A | The value of the HTTP header as a path segment.
+
+<a name="ingress-identifier"></a>
+### Ingress Identifier
+
+kind: `io.l5d.ingress`
+
+Using this identifier enables linkerd to function as a Kubernetes ingress controller. The ingress identifier compares HTTP requests to [ingress resource](https://kubernetes.io/docs/user-guide/ingress/) rules, and assigns a name based on those rules.
+
+#### Identifier Configuration:
+
+> This example watches all ingress resources in the default namespace:
+
+```yaml
+routers:
+- protocol: http
+  identifier:
+    kind: io.l5d.ingress
+    namespace: default
+  servers:
+  - port: 4140
+  dtab: /svc => /#/io.l5d.k8s
+
+namers:
+- kind: io.l5d.k8s
+```
+
+> An example ingress resource watched by the linkerd ingress controller:
+
+```yaml
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: my-first-ingress
+  namespace: default
+annotations:
+  kubernetes.io/ingress.class: "linkerd"
+spec:
+  rules:
+  - http:
+      paths:
+      - path: /testpath
+        backend:
+          serviceName: test
+          servicePort: 80
+```
+
+> So an HTTP request like `http://localhost:4140/testpath` would have an identified name of `/svc/default/80/test`
+
+Key  | Default Value | Description
+---- | ------------- | -----------
+namespace | (all) | The Kubernetes namespace where the ingress resources are deployed. If not specified, linkerd will watch all namespaces.
+host | `localhost` | The Kubernetes master host.
+port | `8001` | The Kubernetes master port.
+
+#### Identifier Path Parameters
+
+> Dtab Path Format
+
+```
+  / dstPrefix / namespace / port / service
+```
+
+Key | Default Value | Description
+--- | ------------- | -----------
+dstPrefix | `/svc` | The `dstPrefix` as set in the routers block.
+namespace | N/A | The Kubernetes namespace.
+port | N/A | The port name.
+svc | N/A | The name of the service.
+
+<a name="static-identifier"></a>
+### Static Identifier
+
+kind: `io.l5d.static`
+
+This identifier always assigns the same static name to all requests.
+
+#### Identifier Configuration:
+
+```yaml
+routers:
+- protocol: http
+  identifier:
+    kind: io.l5d.static
+    path: /foo/bar
+```
+
+Key  | Default Value | Description
+---- | ------------- | -----------
+path | _required_    | The name to assign to all requests
+
+#### Identifier Path Parameters
+
+> Dtab Path Format
+
+```
+  / dstPrefix / *path
+```
+
+Key | Default Value | Description
+--- | ------------- | -----------
+dstPrefix | `/svc` | The `dstPrefix` as set in the routers block.
+path | N/A | The path given in the configuration.
 
 <a name="http-engines"></a>
 ## HTTP Engines
@@ -257,7 +439,7 @@ from untrusted sources.
 
 ### User Headers
 
-> Append a dtab override to the baseDtab for this request
+> Append a dtab override to the dtab for this request
 
 ```shell
 curl -H 'l5d-dtab: /host/web => /host/web-v2' "localhost:5000"

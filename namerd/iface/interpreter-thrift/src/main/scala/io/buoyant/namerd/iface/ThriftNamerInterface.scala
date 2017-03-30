@@ -6,14 +6,15 @@ import com.twitter.finagle.stats.StatsReceiver
 import com.twitter.finagle.tracing.Trace
 import com.twitter.io.Buf
 import com.twitter.logging.Logger
-import com.twitter.util._
-import io.buoyant.namer.{Metadata, DelegateTree, Delegator}
+import com.twitter.util.{NonFatal => _, _}
+import io.buoyant.namer.{DelegateTree, Delegator, Metadata, Paths}
 import io.buoyant.namerd.Ns
 import io.buoyant.namerd.iface.ThriftNamerInterface.Capacity
 import io.buoyant.namerd.iface.thriftscala.{Delegation, DtabRef, DtabReq}
 import io.buoyant.namerd.iface.{thriftscala => thrift}
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicLong
+import scala.util.control.NonFatal
 
 object ThriftNamerInterface {
 
@@ -272,6 +273,18 @@ object ThriftNamerInterface {
       case DelegateTree.Union(path, dentry, trees@_*) =>
         val agg = trees.foldLeft(DelegateUnionAgg(nextId))(_ + _)
         (thrift.DelegateNode(TPath(path), dentry.show, thrift.DelegateContents.Weighted(agg.trees)), agg.nodes, agg.nextId)
+      case DelegateTree.Transformation(path, name, value, tree) =>
+        val (node, childNodes, nextNextId) = mkDelegateTree(tree, nextId)
+        val bound = value match {
+          case bound: Name.Bound =>
+            bound.id match {
+              case id: Path => thrift.BoundName(TPath(id))
+              case _ => thrift.BoundName(TPath(Path.empty))
+            }
+          case path: Name.Path => thrift.BoundName(TPath(path.path))
+        }
+        (thrift.DelegateNode(TPath(path), name, thrift.DelegateContents.Transformation(thrift.Transformation(bound, nextNextId))),
+          childNodes + (nextNextId -> node), nextNextId + 1)
     }
 
   def parseDelegateTree(dt: thrift.DelegateTree): DelegateTree[Name.Path] = {
@@ -306,6 +319,8 @@ object ThriftNamerInterface {
           throw new IllegalArgumentException("delegation cannot accept bound names")
         case thrift.DelegateContents.UnknownUnionField(_) =>
           throw new IllegalArgumentException("unknown union field")
+        case thrift.DelegateContents.Transformation(transformation) =>
+          throw new IllegalArgumentException("delegation cannot accept transformations")
       }
     }
     parseDelegateNode(dt.root)
@@ -387,7 +402,7 @@ class ThriftNamerInterface(
   private[this] val bindingCache = new ObserverCache[(String, Dtab, Path), NameTree[Name.Bound]](
     activeCapacity = capacity.bindingCacheActive,
     inactiveCapacity = capacity.bindingCacheInactive,
-    stats = stats.scope("bindindcache"),
+    stats = stats.scope("bindingcache"),
     mkObserver = (observeBind _).tupled
   )
 
@@ -395,11 +410,21 @@ class ThriftNamerInterface(
    * Converts Addr.Metadata into Thrift AddrMeta
    */
   private[this] def convertMeta(scalaMeta: Addr.Metadata): Option[thrift.AddrMeta] = {
-    // TODO translate metadata (weight info, latency compensation, etc)
-    scalaMeta.get(Metadata.authority) match {
-      case Some(authority: String) => Some(thrift.AddrMeta(Some(authority)))
-      case _ => None
-    }
+    // TODO translate metadata (latency compensation, etc)
+
+    val authority = scalaMeta.get(Metadata.authority).map(_.toString)
+    val nodeName = scalaMeta.get(Metadata.nodeName).map(_.toString)
+    val weight = scalaMeta.get(Metadata.endpointWeight)
+      .flatMap(w => Try(w.toString.toDouble).toOption)
+
+    if (authority.isDefined || nodeName.isDefined)
+      Some(thrift.AddrMeta(
+        authority = authority,
+        nodeName = nodeName,
+        endpointAddrWeight = weight
+      ))
+    else
+      None
   }
 
   /**
@@ -419,7 +444,8 @@ class ThriftNamerInterface(
         val failure = thrift.AddrFailure("empty path", Int.MaxValue, ref)
         Future.exception(failure)
 
-      case path =>
+      case fullPath =>
+        val path = Paths.stripTransformerPrefix(fullPath)
         Trace.recordBinary("namerd.srv/addr.path", path.show)
         Future.const(addrCache.get(path)).flatMap { addrObserver =>
           addrObserver(reqStamp)
@@ -484,7 +510,7 @@ class ThriftNamerInterface(
     namer.bind(NameTree.Leaf(id.drop(pfx.size)))
   }
 
-  private[this] def observeDelegation(ns: Ns, dtab: Dtab, tree: DelegateTree[Name.Path]) = {
+  private[this] def observeDelegation(ns: Ns, dtab: Dtab, tree: NameTree[Name.Path]) = {
     val act = interpreters(ns) match {
       case interpreter: Delegator =>
         interpreter.delegate(dtab, tree)
@@ -493,7 +519,7 @@ class ThriftNamerInterface(
     }
     mkObserver(act, stamper)
   }
-  private[this] val delegationCache = new ObserverCache[(String, Dtab, DelegateTree[Name.Path]), DelegateTree[Name.Bound]](
+  private[this] val delegationCache = new ObserverCache[(String, Dtab, NameTree[Name.Path]), DelegateTree[Name.Bound]](
     activeCapacity = 10,
     inactiveCapacity = 1,
     stats = stats.scope("delegationcache"),
@@ -501,9 +527,10 @@ class ThriftNamerInterface(
   )
 
   override def delegate(req: thrift.DelegateReq): Future[Delegation] = {
-    val thrift.DelegateReq(dtabstr, thrift.Delegation(reqStamp, tree, ns), _) = req
+    val thrift.DelegateReq(dtabstr, thrift.Delegation(reqStamp, ttree, ns), _) = req
     val dtab = Dtab.read(dtabstr)
-    Future.const(delegationCache.get(ns, dtab, parseDelegateTree(tree))).flatMap { observer =>
+    val tree = parseDelegateTree(ttree).toNameTree
+    Future.const(delegationCache.get(ns, dtab, tree)).flatMap { observer =>
       observer(reqStamp)
     }.transform {
       case Return((TStamp(tstamp), delegateTree)) =>

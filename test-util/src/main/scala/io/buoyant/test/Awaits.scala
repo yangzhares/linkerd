@@ -1,12 +1,19 @@
 package io.buoyant.test
 
 import com.twitter.conversions.time._
-import com.twitter.util.{Await, Duration, Future, Time, TimeoutException}
+import com.twitter.util.{Await, Duration, Future, TimeoutException}
+import org.scalatest.concurrent.Eventually
 import org.scalatest.exceptions.TestFailedException
+import org.scalatest.time.{Millis, Span}
 
-trait Awaits {
+trait Awaits extends Eventually {
 
-  def defaultWait: Duration = 2.seconds
+  def defaultWait: Duration =
+    sys.env.get("CI_TERRIBLENESS").map(Duration.parse(_)).getOrElse(2.seconds)
+
+  implicit override val patienceConfig =
+    PatienceConfig(timeout = scaled(Span(defaultWait.inMillis, Millis)))
+
   def awaitStackDepth: Int = 4
 
   def await[T](t: Duration)(f: => Future[T]): T =

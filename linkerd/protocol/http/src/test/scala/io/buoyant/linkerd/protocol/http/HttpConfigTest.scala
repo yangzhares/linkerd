@@ -23,18 +23,23 @@ class HttpConfigTest extends FunSuite with Awaits {
                   |httpAccessLog: access.log
                   |identifier:
                   |  kind: io.l5d.methodAndHost
-                  |maxChunkKB: 8KB
-                  |maxHeadersKB: 8KB
-                  |maxInitialLineKB: 4KB
-                  |maxRequestKB: 5MB
-                  |maxResponseKB: 5MB
+                  |maxChunkKB: 8
+                  |maxHeadersKB: 8
+                  |maxInitialLineKB: 4
+                  |maxRequestKB: 5120
+                  |maxResponseKB: 5120
                   |servers:
                   |- port: 5000
       """.stripMargin
-    val _ = parse(yaml)
+    val config = parse(yaml)
+    assert(config.maxChunkKB.get == 8)
+    assert(config.maxHeadersKB.get == 8)
+    assert(config.maxInitialLineKB.get == 4)
+    assert(config.maxRequestKB.get == 5120)
+    assert(config.maxResponseKB.get == 5120)
   }
 
-  test("default to methodAndHost identifier") {
+  test("default identifier") {
     val yaml = s"""
                   |protocol: http
                   |servers:
@@ -42,12 +47,12 @@ class HttpConfigTest extends FunSuite with Awaits {
       """.stripMargin
     val config = parse(yaml)
     val identifier = config.routerParams[Http.param.HttpIdentifier]
-      .id(Path.read("/http"), () => Dtab.empty)
+      .id(Path.read("/svc"), () => Dtab.empty)
     val req = Request(Method.Get, "/one/two/three")
     req.host = "host.com"
     assert(
       await(identifier(req)).asInstanceOf[IdentifiedRequest[Request]].dst.path ==
-        Path.read("/http/1.1/GET/host.com")
+        Path.read("/svc/host.com")
     )
   }
 
@@ -61,12 +66,12 @@ class HttpConfigTest extends FunSuite with Awaits {
       """.stripMargin
     val config = parse(yaml)
     val identifier = config.routerParams[Http.param.HttpIdentifier]
-      .id(Path.read("/http"), () => Dtab.empty)
+      .id(Path.read("/svc"), () => Dtab.empty)
     val req = Request(Method.Get, "/one/two/three")
     req.host = "host.com"
     assert(
       await(identifier(req)).asInstanceOf[IdentifiedRequest[Request]].dst.path ==
-        Path.read("/http/1.1/GET/host.com")
+        Path.read("/svc/1.1/GET/host.com")
     )
   }
 
@@ -81,12 +86,12 @@ class HttpConfigTest extends FunSuite with Awaits {
       """.stripMargin
     val config = parse(yaml)
     val identifier = config.routerParams[Http.param.HttpIdentifier]
-      .id(Path.read("/http"), () => Dtab.empty)
+      .id(Path.read("/svc"), () => Dtab.empty)
     val req = Request(Method.Get, "/one/two/three")
     req.host = "host.com"
     assert(
       await(identifier(req)).asInstanceOf[IdentifiedRequest[Request]].dst.path ==
-        Path.read("/http/1.1/GET/host.com")
+        Path.read("/svc/1.1/GET/host.com")
     )
   }
 
@@ -101,11 +106,11 @@ class HttpConfigTest extends FunSuite with Awaits {
       """.stripMargin
     val config = parse(yaml)
     val identifier = config.routerParams[Http.param.HttpIdentifier]
-      .id(Path.read("/http"), () => Dtab.empty)
+      .id(Path.read("/svc"), () => Dtab.empty)
     val req = Request(Method.Get, "/one/two/three")
     assert(
       await(identifier(req)).asInstanceOf[IdentifiedRequest[Request]].dst.path ==
-        Path.read("/http/one")
+        Path.read("/svc/one")
     )
   }
 }

@@ -6,10 +6,9 @@ import com.twitter.finagle.tracing.Annotation.{BinaryAnnotation, Rpc}
 import com.twitter.finagle.tracing._
 import com.twitter.util.{Future, Time}
 import io.buoyant.router.RoutingFactory.IdentifiedRequest
-import io.buoyant.test.{Exceptions, Awaits}
-import org.scalatest.FunSuite
+import io.buoyant.test.FunSuite
 
-class RoutingFactoryTest extends FunSuite with Awaits with Exceptions {
+class RoutingFactoryTest extends FunSuite {
   case class Request()
   case class Response()
 
@@ -36,7 +35,7 @@ class RoutingFactoryTest extends FunSuite with Awaits with Exceptions {
     new DstBindingFactory[Request, Response] {
       def status = Status.Open
       def close(d: Time) = Future.Unit
-      def apply(dst: Dst, conn: ClientConnection) = client
+      def apply(dst: Dst.Path, conn: ClientConnection) = client
     }
 
   def mkService(
@@ -73,10 +72,6 @@ class RoutingFactoryTest extends FunSuite with Awaits with Exceptions {
     Trace.letTracer(tracer) {
       val service = mkService(label = "customlabel")
       await(service(Request()))
-      assert(tracer.annotations.exists {
-        case Rpc(name) => name == "customlabel"
-        case _ => false
-      })
       assert(tracer.annotations.exists {
         case BinaryAnnotation(key, value) => key == "router.label" && value == "customlabel"
         case _ => false
@@ -118,4 +113,41 @@ class RoutingFactoryTest extends FunSuite with Awaits with Exceptions {
   //   }
   // }
 
+  test("Identifiers compose lazily") {
+    var checked: Seq[String] = Nil
+    def matching(s: String): RoutingFactory.Identifier[String] = {
+      case `s` =>
+        synchronized {
+          checked = checked :+ s
+        }
+        val dst = Dst.Path(Path.Utf8(s), Dtab.empty, Dtab.empty)
+        Future.value(new RoutingFactory.IdentifiedRequest(dst, s))
+      case _ =>
+        synchronized {
+          checked = checked :+ s
+        }
+        Future.value(new RoutingFactory.UnidentifiedRequest("nah"))
+    }
+    val composed = RoutingFactory.Identifier.compose[String](
+      matching("alpha"),
+      matching("bravo"),
+      matching("charlie")
+    )
+
+    assert(await(composed("alpha")).isInstanceOf[RoutingFactory.IdentifiedRequest[String]])
+    assert(checked == Seq("alpha"))
+    checked = Nil
+
+    assert(await(composed("bravo")).isInstanceOf[RoutingFactory.IdentifiedRequest[String]])
+    assert(checked == Seq("alpha", "bravo"))
+    checked = Nil
+
+    assert(await(composed("charlie")).isInstanceOf[RoutingFactory.IdentifiedRequest[String]])
+    assert(checked == Seq("alpha", "bravo", "charlie"))
+    checked = Nil
+
+    assert(await(composed("donnie")).isInstanceOf[RoutingFactory.UnidentifiedRequest[String]])
+    assert(checked == Seq("alpha", "bravo", "charlie"))
+    checked = Nil
+  }
 }

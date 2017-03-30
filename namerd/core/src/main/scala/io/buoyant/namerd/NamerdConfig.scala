@@ -1,14 +1,16 @@
 package io.buoyant.namerd
 
-import com.twitter.finagle.stats.StatsReceiver
-import com.twitter.finagle.{Path, Namer, Stack}
-import com.twitter.finagle.stats.LoadedStatsReceiver
-import com.twitter.finagle.util.LoadService
+import com.twitter.conversions.time._
+import com.twitter.finagle.stats.{LoadedStatsReceiver, StatsReceiver}
+import com.twitter.finagle.util.{DefaultTimer, LoadService}
+import com.twitter.finagle.{Namer, Path, param, Stack}
+import com.twitter.server.util.JvmStats
 import io.buoyant.admin.AdminConfig
 import io.buoyant.config.{ConfigError, ConfigInitializer, Parser}
-import io.buoyant.config.types.Port
-import io.buoyant.namer.{NamerConfig, NamerInitializer}
-import io.buoyant.telemetry.{Telemeter, NullTelemeter}
+import io.buoyant.namer.{NamerConfig, NamerInitializer, TransformerInitializer}
+import io.buoyant.telemetry.{MetricsTree, MetricsTreeStatsReceiver, Telemeter}
+import io.buoyant.telemetry.admin.{AdminMetricsExportTelemeter, histogramSnapshotInterval}
+import java.net.InetSocketAddress
 import scala.util.control.NoStackTrace
 
 private[namerd] case class NamerdConfig(
@@ -22,25 +24,30 @@ private[namerd] case class NamerdConfig(
   require(interfaces.nonEmpty, "One or more interfaces must be specified")
   import NamerdConfig._
 
-  def mk(defaultTelemeter: Telemeter = NullTelemeter): Namerd = {
+  def mk(): Namerd = {
     if (storage.disabled) {
       val msg = s"The ${storage.getClass.getName} storage is experimental and must be " +
         "explicitly enabled by setting the `experimental' parameter to true."
       throw new IllegalArgumentException(msg) with NoStackTrace
     }
 
-    val stats = defaultTelemeter.stats
+    val metrics = MetricsTree()
+
+    val telemeter = new AdminMetricsExportTelemeter(metrics, histogramSnapshotInterval(), DefaultTimer.twitter)
+
+    val stats = new MetricsTreeStatsReceiver(metrics)
+    JvmStats.register(stats)
     LoadedStatsReceiver.self = stats
 
     val dtabStore = storage.mkDtabStore
-    val namersByPfx = mkNamers()
+    val namersByPfx = mkNamers(Stack.Params.empty + param.Stats(stats))
     val ifaces = mkInterfaces(dtabStore, namersByPfx, stats)
-    val adminImpl = admin.getOrElse(DefaultAdminConfig).mk(DefaultAdminPort)
-    val telemeters = Seq(defaultTelemeter)
+    val adminImpl = admin.getOrElse(DefaultAdminConfig).mk(DefaultAdminAddress)
+    val telemeters = Seq(telemeter)
     new Namerd(ifaces, dtabStore, namersByPfx, adminImpl, telemeters)
   }
 
-  private[this] def mkNamers(): Map[Path, Namer] =
+  private[this] def mkNamers(params: Stack.Params): Map[Path, Namer] =
     namers.foldLeft(Map.empty[Path, Namer]) {
       case (namers, config) =>
         if (config.prefix.isEmpty)
@@ -50,7 +57,7 @@ private[namerd] case class NamerdConfig(
           if (prefix.startsWith(config.prefix) || config.prefix.startsWith(prefix))
             throw NamerdConfig.ConflictingNamers(prefix, config.prefix)
 
-        namers + (config.prefix -> config.newNamer(Stack.Params.empty))
+        namers + (config.prefix -> config.mk(params))
     }
 
   private[this] def mkInterfaces(
@@ -63,8 +70,8 @@ private[namerd] case class NamerdConfig(
 
 private[namerd] object NamerdConfig {
 
-  private def DefaultAdminPort = Port(9991)
-  private def DefaultAdminConfig = AdminConfig(Some(DefaultAdminPort))
+  private def DefaultAdminAddress = new InetSocketAddress(9991)
+  private def DefaultAdminConfig = AdminConfig()
 
   case class ConflictingNamers(prefix0: Path, prefix1: Path) extends ConfigError {
     lazy val message =
@@ -78,16 +85,18 @@ private[namerd] object NamerdConfig {
   private[namerd] case class Initializers(
     namer: Seq[NamerInitializer] = Nil,
     dtabStore: Seq[DtabStoreInitializer] = Nil,
-    iface: Seq[InterfaceInitializer] = Nil
+    iface: Seq[InterfaceInitializer] = Nil,
+    transformers: Seq[TransformerInitializer] = Nil
   ) {
     def iter: Iterable[Seq[ConfigInitializer]] =
-      Seq(namer, dtabStore, iface)
+      Seq(namer, dtabStore, iface, transformers)
   }
 
   private[namerd] lazy val LoadedInitializers = Initializers(
     LoadService[NamerInitializer],
     LoadService[DtabStoreInitializer],
-    LoadService[InterfaceInitializer]
+    LoadService[InterfaceInitializer],
+    LoadService[TransformerInitializer]
   )
 
   def loadNamerd(configText: String, initializers: Initializers): NamerdConfig = {

@@ -6,16 +6,17 @@ import com.fasterxml.jackson.core.{JsonParser, TreeNode}
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize
 import com.fasterxml.jackson.databind.{DeserializationContext, JsonDeserializer, JsonNode}
 import com.twitter.conversions.storage._
-import com.twitter.finagle.Http.{param => hparam}
+import com.twitter.finagle.http.{param => hparam}
 import com.twitter.finagle.buoyant.linkerd.{DelayedRelease, Headers, HttpEngine, HttpTraceInitializer}
 import com.twitter.finagle.client.{AddrMetadataExtraction, StackClient}
 import com.twitter.finagle.http.Request
 import com.twitter.finagle.service.Retries
 import com.twitter.finagle.{Path, Stack}
 import com.twitter.util.Future
-import io.buoyant.linkerd.protocol.http.{AccessLogger, ResponseClassifiers, RewriteHostHeader}
-import io.buoyant.router.RoutingFactory.{RequestIdentification, IdentifiedRequest, UnidentifiedRequest}
+import io.buoyant.linkerd.protocol.http._
 import io.buoyant.router.{Http, RoutingFactory}
+import io.buoyant.router.RoutingFactory.{IdentifiedRequest, RequestIdentification, UnidentifiedRequest}
+import io.buoyant.router.http.AddForwardedHeader
 import scala.collection.JavaConverters._
 
 class HttpInitializer extends ProtocolInitializer.Simple {
@@ -34,15 +35,14 @@ class HttpInitializer extends ProtocolInitializer.Simple {
     val clientStack = Http.router.clientStack
       .prepend(http.AccessLogger.module)
       .replace(HttpTraceInitializer.role, HttpTraceInitializer.clientModule)
+      .replace(Headers.Ctx.clientModule.role, Headers.Ctx.clientModule)
       .insertAfter(Retries.Role, http.StatusCodeStatsFilter.module)
       .insertAfter(AddrMetadataExtraction.Role, RewriteHostHeader.module)
-      .insertAfter(StackClient.Role.prepConn, Headers.Ctx.clientModule)
 
     Http.router
       .withPathStack(pathStack)
       .withBoundStack(boundStack)
       .withClientStack(clientStack)
-      .configured(RoutingFactory.DstPrefix(Path.Utf8(name)))
   }
 
   /**
@@ -61,10 +61,19 @@ class HttpInitializer extends ProtocolInitializer.Simple {
   protected val defaultServer = {
     val stk = Http.server.stack
       .replace(HttpTraceInitializer.role, HttpTraceInitializer.serverModule)
-      .prepend(Headers.Ctx.serverModule)
+      .replace(Headers.Ctx.serverModule.role, Headers.Ctx.serverModule)
       .prepend(http.ErrorResponder.module)
       .prepend(http.StatusCodeStatsFilter.module)
+      .insertBefore(AddForwardedHeader.module.role, AddForwardedHeaderConfig.module)
+
     Http.server.withStack(stk)
+  }
+
+  override def clearServerContext(stk: ServerStack): ServerStack = {
+    // Does NOT use the ClearContext module that forcibly clears the
+    // context. Instead, we just strip out headers on inbound requests.
+    stk.remove(HttpTraceInitializer.role)
+      .replace(Headers.Ctx.serverModule.role, Headers.Ctx.clearServerModule)
   }
 
   val configClass = classOf[HttpConfig]
@@ -77,6 +86,8 @@ object HttpInitializer extends HttpInitializer
 case class HttpClientConfig(
   engine: Option[HttpEngine]
 ) extends ClientConfig {
+
+  @JsonIgnore
   override def clientParams = engine match {
     case Some(engine) => engine.mk(super.clientParams)
     case None => super.clientParams
@@ -84,11 +95,17 @@ case class HttpClientConfig(
 }
 
 case class HttpServerConfig(
-  engine: Option[HttpEngine]
+  engine: Option[HttpEngine],
+  addForwardedHeader: Option[AddForwardedHeaderConfig]
 ) extends ServerConfig {
-  override def serverParams = engine match {
-    case Some(engine) => engine.mk(super.serverParams)
-    case None => super.serverParams
+
+  @JsonIgnore
+  override def serverParams = {
+    val params = super.serverParams + AddForwardedHeaderConfig.Param(addForwardedHeader)
+    engine match {
+      case None => params
+      case Some(engine) => engine.mk(params)
+    }
   }
 }
 
@@ -133,24 +150,9 @@ case class HttpConfig(
   override val protocol: ProtocolInitializer = HttpInitializer
 
   @JsonIgnore
-  private[this] val combinedIdentifier = {
-    // use the first identifier that yields an IdentifiedRequest
-    def combine(identifiers: Seq[RoutingFactory.Identifier[Request]]): RoutingFactory.Identifier[Request] = { req =>
-      identifiers.foldLeft(HttpConfig.NilIdentification) { (identification, next) =>
-        identification.flatMap {
-          // the request has already been identified, just use that
-          case identified: IdentifiedRequest[Request] => Future.value(identified)
-          // the request has not yet been identified, try the next identifier
-          case unidentified: UnidentifiedRequest[Request] => next(req)
-        }
-      }
-    }
-
-    identifier.map { identifierConfigs =>
-      Http.param.HttpIdentifier { (prefix, dtab) =>
-        val identifiers = identifierConfigs.map(_.newIdentifier(prefix, dtab))
-        combine(identifiers)
-      }
+  private[this] val combinedIdentifier = identifier.map { configs =>
+    Http.param.HttpIdentifier { (prefix, dtab) =>
+      RoutingFactory.Identifier.compose(configs.map(_.newIdentifier(prefix, dtab)))
     }
   }
 
@@ -165,10 +167,4 @@ case class HttpConfig(
     .maybeWith(maxResponseKB.map(kb => hparam.MaxResponseSize(kb.kilobytes)))
     .maybeWith(streamingEnabled.map(hparam.Streaming(_)))
     .maybeWith(compressionLevel.map(hparam.CompressionLevel(_)))
-
-}
-
-object HttpConfig {
-  private val NilIdentification: Future[RequestIdentification[Request]] =
-    Future.value(new UnidentifiedRequest("no identifiers"))
 }

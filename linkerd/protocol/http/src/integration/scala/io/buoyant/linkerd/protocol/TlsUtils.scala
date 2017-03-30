@@ -1,7 +1,6 @@
 package io.buoyant.linkerd.protocol
 
 import com.twitter.finagle.http.{Response, Request, TlsFilter}
-import com.twitter.finagle.netty3.Netty3TransporterTLSConfig
 import com.twitter.finagle.ssl.Ssl
 import com.twitter.finagle.stats.NullStatsReceiver
 import com.twitter.finagle.tracing.NullTracer
@@ -27,42 +26,26 @@ object TlsUtils {
   case class Certs(caCert: File, serviceCerts: Map[String, ServiceCert])
   def withCerts(names: String*)(f: Certs => Unit): Unit = {
     // First, we create a CA and get a cert/key for linker
-    val tmpdir = new File("mktemp -d -t linkerd-tls".!!.stripLineEnd)
+    val tmpdir = new File("mktemp -d -t linkerd-tls.XXXXXX".!!.stripLineEnd)
     try {
       val configFile = mkCaDirs (tmpdir)
 
-      val caCert = new File (tmpdir, "cacert.pem")
-      val caKey = new File (tmpdir, "private/cakey.pem")
-      assert (run (newKeyAndCert ("/C=US/CN=Test CA", configFile, caKey, caCert) ) == 0)
+      val caCert = new File(tmpdir, "ca+cert.pem")
+      val caKey = new File(tmpdir, "private/ca_key.pem")
+      assertOk(newKeyAndCert("/C=US/CN=Test CA", configFile, caKey, caCert))
 
       val svcCerts = names.map { name =>
-        val routerReq = new File(tmpdir, s"${name}req.pem")
-        val routerCert = new File(tmpdir, s"${name}cert.pem")
-        val routerKey = new File(tmpdir, s"private/${name}key.pem")
-        assert(
-          run(
-            newReq(
-              s"/C=US/CN=$name",
-              configFile,
-              routerReq,
-              routerKey
-            )
-          ) == 0
-        )
+        val routerReq = new File(tmpdir, s"${name}_req.pem")
+        val routerCert = new File(tmpdir, s"${name}_cert.pem")
+        val routerKey = new File(tmpdir, s"private/${name}_key.tmp.pem")
+        val routerPk8 = new File(tmpdir, s"private/${name}_pk8.pem")
 
-        assert(
-          run(
-            signReq(
-              configFile,
-              caKey,
-              caCert,
-              routerReq,
-              routerCert
-            )
-          ) == 0
-        )
+        assertOk(newReq(s"/C=US/CN=$name", configFile, routerReq, routerKey))
+        assertOk(signReq(configFile, caKey, caCert, routerReq, routerCert))
+        assertOk(toPk8(routerKey, routerPk8))
+
         // routerCert has the server's cert, signed by caCert
-        name -> ServiceCert(routerCert, routerKey)
+        name -> ServiceCert(routerCert, routerPk8)
       }.toMap
 
       f(Certs (caCert, svcCerts) )
@@ -70,6 +53,9 @@ object TlsUtils {
       val _ = Seq("rm", "-rf", tmpdir.getPath).!
     }
   }
+
+  def assertOk(cmd: ProcessBuilder): Unit =
+    assert(run(cmd) == 0, s"`$cmd` failed")
 
   def upstreamTls(server: ListeningServer, tlsName: String, caCert: File) = {
     val address = Address(server.boundAddress.asInstanceOf[InetSocketAddress])
@@ -84,16 +70,12 @@ object TlsUtils {
     tmf.init(ks)
     val ctx = SSLContext.getInstance("TLS")
     ctx.init(null, tmf.getTrustManagers(), null)
-    def tls(address: SocketAddress) = address match {
-      case addr: InetSocketAddress => Ssl.client(ctx, addr.getAddress.getHostAddress, addr.getPort)
-      case _ => Ssl.client()
-    }
 
     val name = Name.Bound(Var.value(Addr.Bound(address)), address)
     FinagleHttp.client
       .configured(param.Stats(NullStatsReceiver))
       .configured(param.Tracer(NullTracer))
-      .withTls(new Netty3TransporterTLSConfig(tls, Some(tlsName)))
+      .withTransport.tls(ctx, tlsName)
       .transformed(_.remove(TlsFilter.role)) // do NOT rewrite Host headers using tlsName
       .newClient(name, "upstream").toService
   }
@@ -113,7 +95,7 @@ object TlsUtils {
     val address = server.boundAddress.asInstanceOf[InetSocketAddress]
     val port = address.getPort
     val dentry = Dentry(
-      Path.read(s"/s/$name"),
+      Path.read(s"/svc/$name"),
       NameTree.read(s"/$$/inet/127.1/$port")
     )
   }
@@ -254,4 +236,8 @@ object TlsUtils {
       "-out",     newCert.getPath,
       "-infiles", req.getPath
     )
+
+
+  def toPk8(in: File, out: File): ProcessBuilder  =
+    Seq("openssl", "pkcs8", "-topk8", "-nocrypt", "-in", in.getPath, "-out", out.getPath)
 }

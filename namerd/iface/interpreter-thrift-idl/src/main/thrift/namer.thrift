@@ -81,7 +81,15 @@ struct AddrReq {
 }
 
 struct AddrMeta {
-  1: optional string authority // HTTP/1.1 Host or HTTP/2.0 :authority
+  // HTTP/1.1 Host or HTTP/2.0 :authority to use on outbound requests.
+  1: optional string authority
+
+  // In scheduled environments, the name of the node that this
+  // address is scheduled on.
+  2: optional string nodeName
+
+  // Endpoints may be weighted. Ignored on BoundAddr.
+  3: optional double endpoint_addr_weight
 }
 
 struct TransportAddress {
@@ -117,6 +125,11 @@ exception AddrFailure {
 
 typedef i32 DelegateNodeId
 
+struct Transformation {
+  1: BoundName value
+  2: DelegateNodeId tree
+}
+
 union DelegateContents {
   1: string excpetion
   2: Void empty
@@ -127,6 +140,7 @@ union DelegateContents {
   7: Path pathLeaf
   8: list<DelegateNodeId> alt
   9: list<WeightedNodeId> weighted
+  10: Transformation transformation
 }
 
 struct DelegateNode {

@@ -1,15 +1,13 @@
+# Do service discovery lookups against the Consul service catalog.
 namers:
 - kind: io.l5d.consul
-  experimental: true
-  prefix: /consul
   includeTag: true
   useHealthCheck: false
 
 routers:
 - protocol: http
-  baseDtab: |
-    /host     => /#/consul/dc1;
-    /http/1.1/* => /host;
+  dtab: |
+    /svc     => /#/consul/dc1/prod;
   servers:
   - port: 4140
     ip: 0.0.0.0
