@@ -20,6 +20,8 @@ case class CanaryAndServiceIdentifier(
   baseDtab: () => Dtab = () => Dtab.base
 ) extends RoutingFactory.Identifier[Request] {
 
+  val VALID_HEADER_VALUES = List("disabled", "enabled", "always")
+
   private[this] def suffix(req: Request): Path =
     if (uris) Path.read(req.path) else Path.empty
 
@@ -32,12 +34,16 @@ case class CanaryAndServiceIdentifier(
       if (optionsheader contains '=') {
         val optionsval = optionsheader.split("=")
         if (servicename.equals(optionsval(0))) {
-          return optionsval(1)
+          if (VALID_HEADER_VALUES contains optionsval(1)) {
+            return optionsval(1)
+          }
         }
       }
     }
     if (!(optionsarray(0) contains '=')) {
-      return optionsarray(0)
+      if (VALID_HEADER_VALUES contains optionsarray(0)) {
+        return optionsarray(0)
+      }
     }
     return "disabled"
   }

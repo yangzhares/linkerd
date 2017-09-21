@@ -25,7 +25,7 @@ class CanaryAndServiceIdentifierTest extends FunSuite with Awaits with Exception
     val req = Request()
     req.uri = "/"
     req.host = "locus.koalabait.com"
-    req.headerMap.set("x-cisco-spark-version-opts", "enabled")
+    req.headerMap.set("x-cisco-spark-canary-opts", "enabled")
     assert(
       await(identifier(req)).asInstanceOf[IdentifiedRequest[Request]].dst ==
         Dst.Path(Path.read("/http/1.1/enabled/locus"))
@@ -48,7 +48,7 @@ class CanaryAndServiceIdentifierTest extends FunSuite with Awaits with Exception
     val req = Request()
     req.uri = "/"
     req.host = "locus.foobar.koalabait.com"
-    req.headerMap.set("x-cisco-spark-version-opts", "enabled")
+    req.headerMap.set("x-cisco-spark-canary-opts", "enabled")
     assert(
       await(identifier(req)).asInstanceOf[IdentifiedRequest[Request]].dst ==
         Dst.Path(Path.read("/http/1.1/enabled/locus"))
@@ -71,7 +71,7 @@ class CanaryAndServiceIdentifierTest extends FunSuite with Awaits with Exception
     val req = Request()
     req.uri = "/"
     req.host = "locus-foobar.koalabait.com"
-    req.headerMap.set("x-cisco-spark-version-opts", "enabled")
+    req.headerMap.set("x-cisco-spark-canary-opts", "enabled")
     assert(
       await(identifier(req)).asInstanceOf[IdentifiedRequest[Request]].dst ==
         Dst.Path(Path.read("/http/1.1/enabled/locus"))
@@ -94,7 +94,7 @@ class CanaryAndServiceIdentifierTest extends FunSuite with Awaits with Exception
     val req = Request()
     req.uri = "/"
     req.host = "locus-foo-bar.koalabait.com"
-    req.headerMap.set("x-cisco-spark-version-opts", "enabled")
+    req.headerMap.set("x-cisco-spark-canary-opts", "enabled")
     assert(
       await(identifier(req)).asInstanceOf[IdentifiedRequest[Request]].dst ==
         Dst.Path(Path.read("/http/1.1/enabled/locus-foo"))
@@ -106,7 +106,7 @@ class CanaryAndServiceIdentifierTest extends FunSuite with Awaits with Exception
     val req = Request()
     req.uri = "/"
     req.host = "locus-foo.koalabait.com"
-    req.headerMap.set("x-cisco-spark-version-opts", "disabled,conversation=always")
+    req.headerMap.set("x-cisco-spark-canary-opts", "disabled,conversation=always")
     assert(
       await(identifier(req)).asInstanceOf[IdentifiedRequest[Request]].dst ==
         Dst.Path(Path.read("/http/1.1/disabled/locus"))
@@ -118,7 +118,7 @@ class CanaryAndServiceIdentifierTest extends FunSuite with Awaits with Exception
     val req = Request()
     req.uri = "/"
     req.host = "locus-foo.koalabait.com"
-    req.headerMap.set("x-cisco-spark-version-opts", "disabled,locus=always")
+    req.headerMap.set("x-cisco-spark-canary-opts", "disabled,locus=always")
     assert(
       await(identifier(req)).asInstanceOf[IdentifiedRequest[Request]].dst ==
         Dst.Path(Path.read("/http/1.1/always/locus"))
@@ -130,7 +130,7 @@ class CanaryAndServiceIdentifierTest extends FunSuite with Awaits with Exception
     val req = Request()
     req.uri = "/"
     req.host = "locus-foo.koalabait.com"
-    req.headerMap.set("x-cisco-spark-version-opts", "locus=always")
+    req.headerMap.set("x-cisco-spark-canary-opts", "locus=always")
     assert(
       await(identifier(req)).asInstanceOf[IdentifiedRequest[Request]].dst ==
         Dst.Path(Path.read("/http/1.1/always/locus"))
@@ -142,7 +142,7 @@ class CanaryAndServiceIdentifierTest extends FunSuite with Awaits with Exception
     val req = Request()
     req.uri = "/"
     req.host = "locus-foo.koalabait.com"
-    req.headerMap.set("x-cisco-spark-version-opts", "conversation=always")
+    req.headerMap.set("x-cisco-spark-canary-opts", "conversation=always")
     assert(
       await(identifier(req)).asInstanceOf[IdentifiedRequest[Request]].dst ==
         Dst.Path(Path.read("/http/1.1/disabled/locus"))
@@ -154,7 +154,7 @@ class CanaryAndServiceIdentifierTest extends FunSuite with Awaits with Exception
     val req = Request()
     req.uri = "/"
     req.host = "locus-foo.koalabait.com"
-    req.headerMap.set("x-cisco-spark-version-opts", "disabled,conversation=enabled,locus=always,raindrop=enabled")
+    req.headerMap.set("x-cisco-spark-canary-opts", "disabled,conversation=enabled,locus=always,raindrop=enabled")
     assert(
       await(identifier(req)).asInstanceOf[IdentifiedRequest[Request]].dst ==
         Dst.Path(Path.read("/http/1.1/always/locus"))
@@ -166,10 +166,82 @@ class CanaryAndServiceIdentifierTest extends FunSuite with Awaits with Exception
     val req = Request()
     req.uri = "/"
     req.host = "locus-foo.koalabait.com"
-    req.headerMap.set("x-cisco-spark-version-opts", "conversation=enabled,locus=always,raindrop=enabled")
+    req.headerMap.set("x-cisco-spark-canary-opts", "conversation=enabled,locus=always,raindrop=enabled")
     assert(
       await(identifier(req)).asInstanceOf[IdentifiedRequest[Request]].dst ==
         Dst.Path(Path.read("/http/1.1/always/locus"))
+    )
+  }
+
+  test("nonsense header, single value") {
+    val identifier = CanaryAndServiceIdentifier(Path.Utf8("http"), false)
+    val req = Request()
+    req.uri = "/"
+    req.host = "locus-foo.koalabait.com"
+    req.headerMap.set("x-cisco-spark-canary-opts", "aiubviyb3q4v")
+    assert(
+      await(identifier(req)).asInstanceOf[IdentifiedRequest[Request]].dst ==
+        Dst.Path(Path.read("/http/1.1/disabled/locus"))
+    )
+  }
+
+  test("nonsense header, single value, service name") {
+    val identifier = CanaryAndServiceIdentifier(Path.Utf8("http"), false)
+    val req = Request()
+    req.uri = "/"
+    req.host = "locus-foo.koalabait.com"
+    req.headerMap.set("x-cisco-spark-canary-opts", "locus")
+    assert(
+      await(identifier(req)).asInstanceOf[IdentifiedRequest[Request]].dst ==
+        Dst.Path(Path.read("/http/1.1/disabled/locus"))
+    )
+  }
+
+  test("nonsense header, single value, service name = nonsense") {
+    val identifier = CanaryAndServiceIdentifier(Path.Utf8("http"), false)
+    val req = Request()
+    req.uri = "/"
+    req.host = "locus-foo.koalabait.com"
+    req.headerMap.set("x-cisco-spark-canary-opts", "locus=bababbovuwb")
+    assert(
+      await(identifier(req)).asInstanceOf[IdentifiedRequest[Request]].dst ==
+        Dst.Path(Path.read("/http/1.1/disabled/locus"))
+    )
+  }
+
+  test("nonsense header, multiple values") {
+    val identifier = CanaryAndServiceIdentifier(Path.Utf8("http"), false)
+    val req = Request()
+    req.uri = "/"
+    req.host = "locus-foo.koalabait.com"
+    req.headerMap.set("x-cisco-spark-canary-opts", "boiubaer,baoy34ybvn")
+    assert(
+      await(identifier(req)).asInstanceOf[IdentifiedRequest[Request]].dst ==
+        Dst.Path(Path.read("/http/1.1/disabled/locus"))
+    )
+  }
+
+  test("nonsense header, valid default") {
+    val identifier = CanaryAndServiceIdentifier(Path.Utf8("http"), false)
+    val req = Request()
+    req.uri = "/"
+    req.host = "locus-foo.koalabait.com"
+    req.headerMap.set("x-cisco-spark-canary-opts", "always,boiubaer,baoy34ybvn")
+    assert(
+      await(identifier(req)).asInstanceOf[IdentifiedRequest[Request]].dst ==
+        Dst.Path(Path.read("/http/1.1/always/locus"))
+    )
+  }
+
+  test("nonsense header, valid non-default") {
+    val identifier = CanaryAndServiceIdentifier(Path.Utf8("http"), false)
+    val req = Request()
+    req.uri = "/"
+    req.host = "locus-foo.koalabait.com"
+    req.headerMap.set("x-cisco-spark-canary-opts", "by7qv34ibvb,locus=enabled,baoy34ybvn")
+    assert(
+      await(identifier(req)).asInstanceOf[IdentifiedRequest[Request]].dst ==
+        Dst.Path(Path.read("/http/1.1/enabled/locus"))
     )
   }
 }
