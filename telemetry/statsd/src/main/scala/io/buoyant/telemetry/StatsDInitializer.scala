@@ -1,6 +1,7 @@
 package io.buoyant.telemetry
 
 import com.fasterxml.jackson.annotation.JsonIgnore
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize
 import com.timgroup.statsd.NonBlockingStatsDClient
 import com.twitter.finagle.Stack
 import com.twitter.finagle.util.DefaultTimer
@@ -28,13 +29,20 @@ case class StatsDConfig(
   hostname: Option[String],
   port: Option[Int],
   gaugeIntervalMs: Option[Int],
-  sampleRate: Option[Double]
+  @JsonDeserialize(contentAs = classOf[java.lang.Double]) sampleRate: Option[Double]
 ) extends TelemeterConfig {
   import StatsDConfig._
 
-  @JsonIgnore override val experimentalRequired = true
-
   @JsonIgnore private[this] val log = Logger.get("io.l5d.statsd")
+
+  log.warning(
+    "Warning, you're using the `io.l5d.statsd` telemeter, which is unsupported " +
+      "and probably won't do what you expect. Use of this telemeter may lead to" +
+      " poor performance or decreased data quality.\n" +
+      "Please see https://discourse.linkerd.io/t/deprecating-the-statsd-telemeter for more information."
+  )
+
+  @JsonIgnore override val experimentalRequired = true
 
   @JsonIgnore private[this] val statsDPrefix = prefix.getOrElse(DefaultPrefix)
   @JsonIgnore private[this] val statsDHost = hostname.getOrElse(DefaultHostname)
@@ -45,7 +53,7 @@ case class StatsDConfig(
   @JsonIgnore
   def mk(params: Stack.Params): StatsDTelemeter = {
     // initiate a UDP connection at startup time
-    log.info(s"connecting to StatsD at $statsDHost:$statsDPort as $statsDPrefix")
+    log.info("connecting to StatsD at %s:%d as %s", statsDHost, statsDPort, statsDPrefix)
     val statsDClient = new NonBlockingStatsDClient(
       statsDPrefix,
       statsDHost,
@@ -56,7 +64,7 @@ case class StatsDConfig(
     new StatsDTelemeter(
       new StatsDStatsReceiver(statsDClient, statsDSampleRate),
       statsDInterval,
-      DefaultTimer.twitter
+      DefaultTimer
     )
   }
 }

@@ -8,15 +8,15 @@ define([
   'template/compiled_templates'
 ], function($, _, Handlebars, RouterServer, templates) {
     var serverContainerTemplate = templates.router_server_container;
-    var rateMetricPartial = templates["server_rate_metric.partial"];
+    var rateMetricPartial = templates["rate_metric.partial"];
 
     var RouterServers = (function() {
-    return function (metricsCollector, routers, $serverEl, routerName) {
-      var servers = routers.servers(routerName);
+    return function (metricsCollector, initialData, $serverEl, routerName) {
+      var servers = initialData[routerName].servers;
       Handlebars.registerPartial('rateMetricPartial', rateMetricPartial);
 
       _.map(servers, function(server) {
-        var $el = $(serverContainerTemplate());
+        var $el = $(serverContainerTemplate({server: server}));
         $serverEl.append($el);
         RouterServer(metricsCollector, server, $el, routerName);
       });

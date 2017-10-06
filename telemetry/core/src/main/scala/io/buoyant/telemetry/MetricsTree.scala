@@ -9,6 +9,7 @@ import scala.collection.JavaConverters._
 trait MetricsTree {
   def children: Map[String, MetricsTree]
   def resolve(scope: Seq[String]): MetricsTree
+  def tryResolve(scope: Seq[String]): Option[MetricsTree]
 
   def metric: Metric
 
@@ -17,6 +18,13 @@ trait MetricsTree {
 
   def registerGauge(f: => Float): Unit
   def deregisterGauge(): Unit
+
+  /**
+   * Recurrsively remove all Metrics and children from this tree.  This is not
+   * threadsafe and explicit synchronization must be used to avoid holding
+   * references to Metrics in pruned branches.
+   */
+  def prune(): Unit
 }
 
 object MetricsTree {
@@ -46,6 +54,12 @@ object MetricsTree {
       case Nil => this
       case Seq(name) => getOrMk(name)
       case Seq(child, rest@_*) => getOrMk(child).resolve(rest)
+    }
+
+    def tryResolve(scope: Seq[String]): Option[MetricsTree] = scope match {
+      case Nil => Some(this)
+      case Seq(name) => trees.get(name)
+      case Seq(child, rest@_*) => trees.get(child).flatMap(_.tryResolve(rest))
     }
 
     /*
@@ -95,6 +109,14 @@ object MetricsTree {
         if (!metricRef.compareAndSet(orig, Metric.None)) deregisterGauge()
       case _ =>
         throw new IllegalArgumentException("non-gauge metric already exists")
+    }
+
+    def prune(): Unit = {
+      trees.values.foreach { child =>
+        child.prune()
+      }
+      trees.clear()
+      metricRef.set(Metric.None)
     }
   }
 }

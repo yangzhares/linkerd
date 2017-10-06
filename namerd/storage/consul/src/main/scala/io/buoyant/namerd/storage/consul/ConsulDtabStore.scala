@@ -1,8 +1,10 @@
 package io.buoyant.namerd
 package storage.consul
 
+import com.google.common.cache.{CacheBuilder, CacheLoader}
 import com.twitter.finagle.{Dtab, Failure, Path}
 import com.twitter.io.Buf
+import com.twitter.logging.Logger
 import com.twitter.util._
 import io.buoyant.consul.v1._
 import io.buoyant.namerd.DtabStore.{DtabNamespaceAlreadyExistsException, DtabNamespaceDoesNotExistException, DtabVersionMismatchException, Version}
@@ -15,7 +17,9 @@ class ConsulDtabStore(
   writeConsistency: Option[ConsistencyMode] = None
 ) extends DtabStore {
 
-  override def list(): Activity[Set[Ns]] = {
+  private[this] val log = Logger.get("consul")
+
+  override val list: Activity[Set[Ns]] = {
     def namespace(key: String): Ns = key.stripPrefix("/").stripSuffix("/").substring(root.show.length)
 
     val run = Var.async[Activity.State[Set[Ns]]](Activity.Pending) { updates =>
@@ -41,6 +45,7 @@ class ConsulDtabStore(
               case Throw(e: Failure) if e.isFlagged(Failure.Interrupted) => Future.Done
               case Throw(e) =>
                 updates() = Activity.Failed(e)
+                log.error("consul ns list observation error %s", e)
                 cycle(None)
             }
         else
@@ -54,7 +59,7 @@ class ConsulDtabStore(
       }
     }
 
-    Activity(run)
+    Activity(run).stabilize
   }
 
   def create(ns: Ns, dtab: Dtab): Future[Unit] =
@@ -106,7 +111,18 @@ class ConsulDtabStore(
       consistency = writeConsistency
     ).unit
 
-  def observe(ns: Ns): Activity[Option[VersionedDtab]] = {
+  // We don't hold cached observations open so caching these is very cheap.  Therefore we don't
+  // limit the size of this cache.
+  private[this] val dtabCache = CacheBuilder.newBuilder()
+    .build[Ns, Activity[Option[VersionedDtab]]](
+      new CacheLoader[Ns, Activity[Option[VersionedDtab]]] {
+        override def load(key: Ns): Activity[Option[VersionedDtab]] = _observe(key)
+      }
+    )
+
+  def observe(ns: Ns): Activity[Option[VersionedDtab]] = dtabCache.get(ns).stabilize
+
+  private[this] def _observe(ns: Ns): Activity[Option[VersionedDtab]] = {
     val key = s"${root.show}/$ns"
     val run = Var.async[Activity.State[Option[VersionedDtab]]](Activity.Pending) { updates =>
       @volatile var running = true
@@ -131,6 +147,7 @@ class ConsulDtabStore(
             case Throw(e: Failure) if e.isFlagged(Failure.Interrupted) => Future.Done
             case Throw(e) =>
               updates() = Activity.Failed(e)
+              log.error("consul ns %s dtab observation error %s", ns, e)
               cycle(None)
           }
         else
@@ -143,6 +160,6 @@ class ConsulDtabStore(
         Future.Unit
       }
     }
-    Activity(run)
+    Activity(run).stabilize
   }
 }

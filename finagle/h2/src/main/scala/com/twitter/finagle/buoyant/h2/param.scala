@@ -1,6 +1,8 @@
 package com.twitter.finagle.buoyant.h2
 
 import com.twitter.finagle.Stack
+import com.twitter.finagle.buoyant.h2.service.H2Classifiers
+import com.twitter.finagle.tracing.{DefaultTracer, Tracer => FTracer}
 import com.twitter.util.StorageUnit
 
 package object param {
@@ -126,5 +128,25 @@ package object param {
     implicit object MaxHeaderListSize extends Stack.Param[MaxHeaderListSize] {
       val default = MaxHeaderListSize(None)
     }
+  }
+
+  /**
+   * Copied from com.twitter.finagle.param.Tracer
+   */
+  case class Tracer(tracer: FTracer) {
+    def mk(): (Tracer, Stack.Param[Tracer]) =
+      (this, Tracer.param)
+  }
+  object Tracer {
+    implicit val param: Stack.Param[Tracer] = Stack.Param(Tracer(DefaultTracer))
+  }
+
+  case class H2Classifier(classifier: service.H2Classifier) {
+    def mk(): (H2Classifier, Stack.Param[H2Classifier]) =
+      (this, H2Classifier.param)
+  }
+  object H2Classifier {
+    implicit val param: Stack.Param[H2Classifier] =
+      Stack.Param(H2Classifier(H2Classifiers.Default))
   }
 }

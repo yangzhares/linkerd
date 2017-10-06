@@ -6,7 +6,7 @@ import com.twitter.finagle.tracing.NullTracer
 import io.buoyant.config.types.Port
 import io.buoyant.consul.utils.RichConsulClient
 import io.buoyant.consul.v1
-import io.buoyant.consul.v1.ConsistencyMode
+import io.buoyant.consul.v1.{HealthStatus, ConsistencyMode}
 import io.buoyant.namer.{NamerConfig, NamerInitializer}
 
 /**
@@ -70,7 +70,7 @@ case class ConsulCanaryConfig(
       .newService(s"/$$/inet/$getHost/$getPort")
 
     val consul = useHealthCheck match {
-      case Some(true) => v1.HealthApi(service)
+      case Some(true) => v1.HealthApi(service, Set(HealthStatus.Passing))
       case _ => v1.CatalogApi(service)
     }
     val agent = v1.AgentApi(service)

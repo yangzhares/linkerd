@@ -13,20 +13,25 @@ import com.twitter.util._
 object Api {
   val BufSize = 8 * 1024
 
+  private[k8s] class Response(rsp: http.Response) extends Throwable({
+    val content = if (rsp.contentString.isEmpty) "(no content)" else rsp.contentString
+    s"""$rsp: $content"""
+  })
+
   val Closed = Failure("k8s observation released", Failure.Interrupted)
-  case class UnexpectedResponse(rsp: http.Response) extends Throwable
+  case class UnexpectedResponse(rsp: http.Response) extends Response(rsp)
 
   /**
    * Represents an HTTP 409 Conflict response, returned by the k8s API when attempting to update a
    * resource with an out-of-date resource version or when attempting to create a resource at an
    * existing name.
    */
-  case class Conflict(rsp: http.Response) extends Throwable
+  case class Conflict(rsp: http.Response) extends Response(rsp)
 
   /**
    * Represents an HTTP 404 Not Found response.
    */
-  case class NotFound(rsp: http.Response) extends Throwable
+  case class NotFound(rsp: http.Response) extends Response(rsp)
 
   private[k8s] def mkreq(
     method: http.Method,
@@ -71,7 +76,7 @@ object Api {
 /**
  * Generally required as an implicit for list resources. Provides the kubernetes-designated
  * name for the resource, as well as a means of transforming an individual instance into a
- * type-specialized [[Watch]].
+ * type-specialized Watch.
  */
 trait ObjectDescriptor[O <: KubeObject, W <: Watch[O]] {
   /**
@@ -92,23 +97,31 @@ trait ObjectDescriptor[O <: KubeObject, W <: Watch[O]] {
  * Describes an Object in the Kubernetes API (i.e.
  * http://kubernetes.io/docs/api-reference/v1/definitions/#_v1_endpoints)
  */
-trait KubeObject {
+trait KubeObject extends KubeMetadata {
   def apiVersion: Option[String]
-  def metadata: Option[ObjectMeta]
   def kind: Option[String]
 }
 
 /**
- * Describes a List of Objects in the Kubernetes API (i.e.
- * [[http://kubernetes.io/docs/api-reference/v1/definitions/#_v1_endpointslist EndpointsList]])
+ * A Kubernetes API response with a `metadata` field.
+ *
+ * This is factored out from KubeObject and KubeList so that
+ * the `G` type param on Watchable can be constrained based on it,
+ * while still allowing both KubeObjects and KubeLists to be
+ * Watchable, *and* maintaining the distinction between objects
+ * and lists.
+ */
+trait KubeMetadata {
+  def metadata: Option[ObjectMeta]
+}
+
+/**
+ * Describes a List of Objects in the Kubernetes API (i.e. EndpointsList)
  *
  * @tparam O the type of object contained in the list
  */
-trait KubeList[O <: KubeObject] {
+trait KubeList[O <: KubeObject] extends KubeMetadata {
   def items: Seq[O]
-  def apiVersion: Option[String]
-  def metadata: Option[ObjectMeta]
-  def kind: Option[String]
 }
 
 /**

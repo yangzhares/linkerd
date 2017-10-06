@@ -1,9 +1,8 @@
 "use strict";
 
 define([
-  'src/query',
   'src/utils'
-], function(Query, Utils) {
+], function(Utils) {
   var CombinedClientGraph = (function() {
     var ignoredClients = {};
 
@@ -14,27 +13,31 @@ define([
     function timeseriesParamsFn(clientColors) {
       return function(name) {
         return {
-          strokeStyle: clientColors[name.match(Query.clientQuery().build())[2]].color,
+          strokeStyle: clientColors[name.split("/requests")[0]].color,
           lineWidth: 2
         };
       };
     }
 
-    function getClientsToQuery(routers, routerName) {
-      var clients = routers.clients(routerName);
-      var nonIgnoredClients = _.difference(clients, ignoredClients[routerName]);
+    function getClientsToDisplay(clients, routerName) {
+      var nonIgnoredClients = [];
+      var nonExpiredClients = [];
 
-      // if all clients are collapsed, let the combined graph show all clients
-      return _.isEmpty(nonIgnoredClients) ? clients : nonIgnoredClients;
+      _(clients).each(function(clientData, client) {
+        // expired clients have empty data
+        if (!_.isEmpty(clientData)) {
+          nonExpiredClients.push(client);
+          if (!ignoredClients[routerName][client]) {
+            nonIgnoredClients.push(client);
+          }
+        }
+      });
+
+      return _.isEmpty(nonIgnoredClients) ? nonExpiredClients : nonIgnoredClients;
     }
 
-    function getQuery(routerName, clientsToQuery) {
-      var clients = _.map(clientsToQuery, 'label');
-      return Query.clientQuery().withRouter(routerName).withClients(clients).withMetric("requests").build();
-    }
-
-    return function(metricsCollector, routers, routerName, $root, colors) {
-      ignoredClients[routerName] = [];
+    return function(metricsCollector, initialData, routerName, $root, colors) {
+      ignoredClients[routerName] = {}; // clients that are minimized in the UI
 
       var chart = new Utils.UpdateableChart(
         {
@@ -59,32 +62,40 @@ define([
         timeseriesParamsFn(colors)
       );
 
-      var query = getQuery(routerName, getClientsToQuery(routers, routerName));
-      var desiredMetrics = _.map(Query.filter(query, metricsCollector.getCurrentMetrics()), clientToMetric);
+      var desiredMetrics = _.map(initialData[routerName].clients, function(client) {
+        return { name: client + "/requests" };
+      });
       chart.setMetrics(desiredMetrics);
 
       var metricsListener = function(data) {
-        var clientsToQuery = getClientsToQuery(routers, routerName);
-        var metricQuery = getQuery(routerName, clientsToQuery);
-        var dataToDisplay = Query.filter(metricQuery, data.specific);
+        var clientData = _.get(data, ["rt", routerName, "client"]);
+        var clientsToDisplay = getClientsToDisplay(clientData, routerName);
+
+        var dataToDisplay = _.map(clientsToDisplay, function(client) {
+          return {
+            name: client + "/requests",
+            delta: _.get(clientData, [client, "requests", "delta"]) || 0
+          };
+        });
 
         chart.updateMetrics(dataToDisplay);
       };
 
-      metricsCollector.registerListener(metricsListener, function(metrics) { return Query.filter(query, metrics); });
+      metricsCollector.registerListener("CombinedClientGraph_" + routerName, metricsListener);
+
       return {
         addClients: function(clients) {
           chart.addMetrics(_.map(clients, function(client) {
-            return clientToMetric(client.prefix + "requests");
+            return clientToMetric(client + "/requests");
           }));
         },
 
         ignoreClient: function(client) {
-          ignoredClients[routerName].push(client);
+          ignoredClients[routerName][client] = true;
         },
 
         unIgnoreClient: function(client) {
-          _.remove(ignoredClients[routerName], client);
+          ignoredClients[routerName][client] = false;
         },
 
         updateColors: function(newColors) {

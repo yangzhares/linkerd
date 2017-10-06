@@ -17,17 +17,18 @@ object Main extends App {
         val namerd = config.mk()
 
         val admin = namerd.admin.serve(this, NamerdAdmin(config, namerd))
-        log.info(s"serving http admin on ${admin.boundAddress}")
+        log.info("serving %s on %s", namerd.admin.scheme, admin.boundAddress)
 
         val servers = namerd.interfaces.map { iface =>
           val server = iface.serve()
-          log.info(s"serving ${iface.kind} interface on ${server.boundAddress}")
+          log.info("serving %s interface on %s", iface.kind, server.boundAddress)
           server
         }
         val telemeters = namerd.telemeters.map(_.run())
 
         closeOnExit(Closable.sequence(
           Closable.all(servers: _*),
+          Closable.all(telemeters: _*),
           admin
         ))
         Await.all(servers: _*)

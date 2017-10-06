@@ -73,6 +73,11 @@ case class CanaryAndServiceIdentifier(
             )
           )
       }
+
+    case v =>
+      Future.value(
+        new UnidentifiedRequest(s"Unknown HTTP version $v")
+      )
   }
 
 }

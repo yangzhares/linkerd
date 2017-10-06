@@ -2,11 +2,13 @@ package io.buoyant.namer.consul
 
 import com.fasterxml.jackson.annotation.JsonIgnore
 import com.twitter.finagle._
+import com.twitter.finagle.service.Retries
 import com.twitter.finagle.tracing.NullTracer
 import io.buoyant.config.types.Port
 import io.buoyant.consul.utils.RichConsulClient
 import io.buoyant.consul.v1
 import io.buoyant.consul.v1.ConsistencyMode
+import io.buoyant.consul.v1.HealthStatus
 import io.buoyant.namer.{NamerConfig, NamerInitializer}
 
 /**
@@ -18,7 +20,9 @@ import io.buoyant.namer.{NamerConfig, NamerInitializer}
  *   host: consul.site.biz
  *   port: 8600
  *   includeTag: true
- *   useHealthCheck: false
+ *   useHealthCheck: true
+ *   healthStatuses:
+ *   - passing
  *   setHost: true
  *   token: some-consul-acl-token
  *   consistencyMode: default
@@ -38,6 +42,7 @@ case class ConsulConfig(
   port: Option[Port],
   includeTag: Option[Boolean],
   useHealthCheck: Option[Boolean],
+  healthStatuses: Option[Set[HealthStatus.Value]] = None,
   token: Option[String] = None,
   setHost: Option[Boolean] = None,
   consistencyMode: Option[ConsistencyMode] = None,
@@ -60,8 +65,11 @@ case class ConsulConfig(
   @JsonIgnore
   def newNamer(params: Stack.Params): Namer = {
     val service = Http.client
+      // Removes the default client requeues module,
+      // (retries are handled in BaseApi.infiniteRetryFilter)
+      .withStack(Http.client.stack.remove(Retries.Role))
       .withParams(Http.client.params ++ params)
-      .withLabel(prefix.show.stripPrefix("/"))
+      .withLabel("client")
       .interceptInterrupts
       .failFast(failFast)
       .setAuthToken(token)
@@ -69,8 +77,9 @@ case class ConsulConfig(
       .withTracer(NullTracer)
       .newService(s"/$$/inet/$getHost/$getPort")
 
-    val consul = useHealthCheck match {
-      case Some(true) => v1.HealthApi(service)
+    val consul = (useHealthCheck, healthStatuses) match {
+      case (Some(true), Some(status)) => v1.HealthApi(service, status)
+      case (Some(true), _) => v1.HealthApi(service, Set(HealthStatus.Passing))
       case _ => v1.CatalogApi(service)
     }
     val agent = v1.AgentApi(service)

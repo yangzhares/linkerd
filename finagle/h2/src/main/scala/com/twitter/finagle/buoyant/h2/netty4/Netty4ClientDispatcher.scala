@@ -1,19 +1,17 @@
 package com.twitter.finagle.buoyant.h2
 package netty4
 
+import com.twitter.concurrent.AsyncMutex
+import com.twitter.finagle.stats.StatsReceiver
 import com.twitter.finagle.{Service, Status => SvcStatus}
-import com.twitter.finagle.stats.{StatsReceiver => FStatsReceiver}
 import com.twitter.finagle.transport.Transport
 import com.twitter.logging.Logger
 import com.twitter.util._
 import io.netty.handler.codec.http2._
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
-import scala.collection.JavaConverters._
-import scala.util.control.NoStackTrace
+import java.util.concurrent.atomic.AtomicInteger
 
 object Netty4ClientDispatcher {
-  private val log = Logger.get(getClass.getName)
+  private val log = Logger.get("h2")
   private val BaseStreamId = 3 // ID=1 is reserved for HTTP/1 upgrade
   private val MaxStreamId = (math.pow(2, 31) - 1).toInt
 }
@@ -27,7 +25,7 @@ object Netty4ClientDispatcher {
  */
 class Netty4ClientDispatcher(
   override protected[this] val transport: Transport[Http2Frame, Http2Frame],
-  streamStats: Netty4StreamTransport.StatsReceiver
+  protected[this] val stats: StatsReceiver
 ) extends Service[Request, Response] with Netty4DispatcherBase[Request, Response] {
   import Netty4ClientDispatcher._
 
@@ -36,10 +34,14 @@ class Netty4ClientDispatcher(
   override protected[this] val prefix =
     s"C L:${transport.localAddress} R:${transport.remoteAddress}"
 
+  private[this] val streamStats = new Netty4StreamTransport.StatsReceiver(stats)
+
   transport.onClose.onSuccess(onTransportClose)
 
-  override def close(deadline: Time): Future[Unit] =
+  override def close(deadline: Time): Future[Unit] = {
+    streamsGauge.remove()
     goAway(GoAway.NoError, deadline)
+  }
 
   private[this] val _id = new AtomicInteger(BaseStreamId)
   private[this] def nextId(): Int = _id.getAndAdd(2) match {
@@ -77,25 +79,36 @@ class Netty4ClientDispatcher(
     goAway(GoAway.ProtocolError).before(Future.exception(e))
   }
 
+  /*
+   * In order to ensure that the initial frame for each stream is written to the
+   * transport in order of its stream id, we hold a mutex from when the stream id
+   * is allocated to when the initial frame of that stream is written.
+   */
+  val mutex = new AsyncMutex()
+
   /**
    * Write a request on the underlying connection and return its
    * response when it is received.
    */
   override def apply(req: Request): Future[Response] = {
-    val st = newStreamTransport()
-    // Stream the request while receiving the response and
-    // continue streaming the request until it is complete,
-    // canceled,  or the response fails.
-    val sendFF = st.send(req)
 
-    // If the stream is reset prematurely, cancel the pending write
-    st.onReset.onFailure {
-      case StreamError.Remote(rst: Reset) => sendFF.flatten.raise(rst)
-      case StreamError.Remote(e) => sendFF.flatten.raise(Reset.Cancel)
-      case e => sendFF.flatten.raise(e)
+    mutex.acquire().flatMap { permit =>
+      val st = newStreamTransport()
+      // Stream the request while receiving the response and
+      // continue streaming the request until it is complete,
+      // canceled,  or the response fails.
+      val sendFF = st.send(req)
+
+      // If the stream is reset prematurely, cancel the pending write
+      st.onReset.onFailure {
+        case StreamError.Remote(rst: Reset) => sendFF.flatten.raise(rst)
+        case StreamError.Remote(e) => sendFF.flatten.raise(Reset.Cancel)
+        case e => sendFF.flatten.raise(e)
+      }
+
+      sendFF.ensure(permit.release())
+      sendFF.unit.before(st.onRecvMessage)
     }
-
-    sendFF.unit.before(st.onRecvMessage)
   }
 
 }

@@ -7,7 +7,7 @@ import com.twitter.finagle.param.HighResTimer
 import com.twitter.finagle.service.{RetryBudget, RetryFilter, RetryPolicy}
 import com.twitter.finagle.stats.StatsReceiver
 import com.twitter.finagle.tracing.Trace
-import com.twitter.finagle.{Failure, Filter, http}
+import com.twitter.finagle.{ConnectionFailedException, Failure, Filter, http}
 import com.twitter.io.Buf
 import com.twitter.util.{NonFatal => _, _}
 import io.buoyant.consul.log
@@ -28,12 +28,16 @@ trait BaseApi extends Closable {
     RetryPolicy.backoff(backoffs) {
       // We will assume 5xx are retryable, everything else is not for now
       case (req, Return(rep)) if rep.status.code >= 500 && rep.status.code < 600 =>
-        log.error(s"Retrying Consul request '${req.method} ${req.uri}' on ${UnexpectedResponse(rep)}")
+        log.error("Retrying Consul request '%s %s' on %s", req.method, req.uri, UnexpectedResponse(rep))
         true
+
+      case (req, Throw(Failure(Some(err: ConnectionFailedException)))) if req.getParamNames().contains("index") =>
+        log.error("Will not retry blocking index request '%s %s' on error: %s", req.method, req.uri, err)
+        false
       // Don't retry on interruption
       case (_, Throw(e: Failure)) if e.isFlagged(Failure.Interrupted) => false
       case (req, Throw(NonFatal(ex))) =>
-        log.error(s"Retrying Consul request '${req.method} ${req.uri}' on NonFatal error: $ex")
+        log.error("Retrying Consul request '%s %s' on NonFatal error: %s", req.method, req.uri, ex)
         true
     },
     HighResTimer.Default,
@@ -46,7 +50,7 @@ trait BaseApi extends Closable {
       infiniteRetryFilter
     else
       Filter.identity[http.Request, http.Response]
-    retryFilter andThen apiErrorFilter andThen client
+    apiErrorFilter andThen retryFilter andThen client
   }
 
   private[v1] def mkreq(

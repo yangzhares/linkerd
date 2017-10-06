@@ -14,46 +14,51 @@ define([
 
     describe("registerListener", function() {
       it("registers listener to receive specific metrics on update", function() {
-        var targetMetric = "rt/subtractor/bindcache/path/misses";
+        var targetMetric = ["rt", "subtractor", "bindcache", "path", "misses", "counter"];
         var expectedDelta = 3;
         var data;
         var handler = function(resp) {
-          data = resp.specific;
+          data = resp;
         }
-        collector.registerListener(handler, function() { return [targetMetric];})
-        var updateMetrics = _.clone(metricsJson);
-        updateMetrics[targetMetric] += expectedDelta;
+        collector.registerListener("testListener", handler);
+        var updateMetrics = _.cloneDeep(metricsJson);
+        _.set(updateMetrics, targetMetric, _.get(metricsJson, targetMetric) + expectedDelta);
         collector.__update__(updateMetrics);
 
-        expect(data.length).toEqual(1);
-        expect(data[0].name).toEqual(targetMetric);
-        expect(data[0].delta).toEqual(expectedDelta);
-        expect(data[0].value).toEqual(metricsJson[targetMetric] + expectedDelta);
+        var result = _.get(data, ["rt", "subtractor", "bindcache", "path", "misses"]);
+
+        expect(result.delta).toEqual(expectedDelta);
+        expect(result.counter).toEqual(_.get(metricsJson, targetMetric) + expectedDelta);
       });
 
       it("registers listener to receive full metrics response on update", function() {
         var data;
         var handler = function(resp) {
-          data = resp.general;
+          data = resp;
         }
-        collector.registerListener(handler, function() { return [];})
+        collector.registerListener("testListener", handler);
         collector.__update__(metricsJson);
 
         expect(typeof data).toEqual("object");
-        expect(data["rt/subtractor/bindcache/path/misses"]).toEqual(1);
+        expect(_.get(data, ["rt", "subtractor", "bindcache", "path", "misses", "counter"])).toEqual(7);
       });
     });
 
     describe("deregisterListener", function() {
-      it("removes listener", function() {
-        var wasCalled = false;
-        var handler = function() {
-          wasCalled = true;
-        }
-        collector.registerListener(handler, function() { return [];});
-        collector.deregisterListener(handler);
+      it("removes specified listener", function() {
+        var dogWasCalled = false;
+        var catWasCalled = false;
+
+        var dogHandler = function() { dogWasCalled = true; }
+        var catHandler = function() { catWasCalled = true; }
+        collector.registerListener("dogListener", dogHandler);
+        collector.registerListener("catListener", catHandler);
+        collector.deregisterListener("dogListener");
+
         collector.__update__(metricsJson);
-        expect(wasCalled).toEqual(false);
+
+        expect(dogWasCalled).toEqual(false);
+        expect(catWasCalled).toEqual(true);
       });
     });
   });

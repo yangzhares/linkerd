@@ -4,11 +4,11 @@ import com.twitter.finagle.http.{Request, Status}
 import io.buoyant.admin.ConfigHandler
 import io.buoyant.linkerd._
 import io.buoyant.linkerd.protocol.ThriftInitializer
-import io.buoyant.namer.TestNamerInitializer
-import io.buoyant.test.Awaits
-import org.scalatest.FunSuite
+import io.buoyant.namer.{DefaultInterpreterInitializer, TestNamerInitializer}
+import io.buoyant.test.FunSuite
+import io.buoyant.transformer.perHost.SpecificHostTransformerInitializer
 
-class ConfigHandlerTest extends FunSuite with Awaits {
+class ConfigHandlerTest extends FunSuite {
 
   test("reserializes config") {
     val initializers = Linker.Initializers(
@@ -25,17 +25,18 @@ routers:
   - ip: 127.0.0.1
     port: 1
 - protocol: thrift
+  thriftProtocol: binary
   client:
-    thriftProtocol: binary
+    thriftFramed: true
   servers:
   - port: 2
-    thriftProtocol: compact
+    thriftFramed: false
                              """, initializers)
     val handler = new ConfigHandler(linker, initializers.iter)
     val req = Request()
     val rsp = await(handler(req))
     assert(rsp.status == Status.Ok)
-    assert(rsp.contentString == """
+    assertJsonEquals(rsp.contentString, """
       |{
       |  "namers":[
       |    {"buh":true, "kind": "test"}
@@ -44,10 +45,45 @@ routers:
       |    {"protocol":"plain","servers":[{"port":1, "ip":"localhost"}]},
       |    {
       |      "protocol":"thrift",
-      |      "servers":[{"thriftProtocol":"compact", "port":2}],
-      |      "client":{"thriftProtocol":"binary"}
+      |      "thriftProtocol":"binary",
+      |      "servers":[{"thriftFramed":false, "port":2}],
+      |      "client":{"thriftFramed":true, "kind":"io.l5d.global"}
       |    }
       |  ]
-      |}""".stripMargin.replaceAll("\\s", ""))
+      |}""".stripMargin)
+  }
+
+  test("specificHost config") {
+    val initializers = Linker.Initializers(
+      protocol = Seq(ThriftInitializer),
+      interpreter = Seq(DefaultInterpreterInitializer),
+      transformer = Seq(new SpecificHostTransformerInitializer)
+    )
+    val linker = Linker.parse("""
+routers:
+- protocol: thrift
+  interpreter:
+    kind: default
+    transformers:
+    - kind: io.l5d.specificHost
+      host: 192.168.99.100
+                              """, initializers)
+    val handler = new ConfigHandler(linker, initializers.iter)
+    val req = Request()
+    val rsp = await(handler(req))
+    assert(rsp.status == Status.Ok)
+    assertJsonEquals(rsp.contentString, """
+      |{
+      |  "routers":[
+      |    {
+      |      "protocol":"thrift",
+      |      "servers":[],
+      |      "interpreter":{
+      |        "kind":"default",
+      |        "transformers":[{"kind":"io.l5d.specificHost", "host":"192.168.99.100"}]
+      |      }
+      |    }
+      |  ]
+      |}""".stripMargin)
   }
 }

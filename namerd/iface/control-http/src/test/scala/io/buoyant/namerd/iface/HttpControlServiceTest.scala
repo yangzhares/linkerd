@@ -9,11 +9,11 @@ import com.twitter.finagle.naming.NameInterpreter
 import com.twitter.finagle.{Status => _, _}
 import com.twitter.io.{Buf, Reader}
 import com.twitter.util._
-import io.buoyant.namer.ConfiguredDtabNamer
+import io.buoyant.namer.{ConfiguredDtabNamer, RichActivity}
 import io.buoyant.namerd._
 import io.buoyant.namerd.storage.InMemoryDtabStore
 import io.buoyant.test.Awaits
-import org.scalatest.FunSuite
+import org.scalatest.{Assertion, FunSuite}
 
 class HttpControlServiceTest extends FunSuite with Awaits {
 
@@ -36,12 +36,12 @@ class HttpControlServiceTest extends FunSuite with Awaits {
       ConfiguredDtabNamer(dtab, Nil)
     }, Map.empty)
 
-  def readAndAssert(reader: Reader, value: String): Unit = {
+  def readAndAssert(reader: Reader, value: String): Assertion = {
     val buf = Buf.Utf8(value)
     readAndAssert(reader, buf)
   }
 
-  def readAndAssert(reader: Reader, value: Buf): Unit = {
+  def readAndAssert(reader: Reader, value: Buf): Assertion = {
     val buf = value.concat(HttpControlService.newline)
     val res = await(reader.read(buf.length)).flatMap(Buf.Utf8.unapply)
     assert(res == Some(buf).flatMap(Buf.Utf8.unapply))
@@ -159,15 +159,22 @@ class HttpControlServiceTest extends FunSuite with Awaits {
     rsp.reader.discard()
   }
 
-  for (ct <- Seq("application/dtab", MediaType.Txt))
-    test(s"GET /api/1/dtabs/ns exists; accept $ct") {
+  val acceptsAndMediaTypes = List(
+    ("application/dtab", "application/dtab"),
+    ("application/dtab;q=0.9", "application/dtab"),
+    (MediaType.Txt, MediaType.Txt),
+    (MediaType.Txt + ";q=0.9", MediaType.Txt)
+  )
+
+  for ((a, mt) <- acceptsAndMediaTypes)
+    test(s"GET /api/1/dtabs/ns exists; accept $a") {
       val req = Request()
       req.uri = "/api/1/dtabs/yeezus"
-      req.accept = Seq(ct, MediaType.Json)
+      req.accept = Seq(a, MediaType.Json)
       val service = newService()
       val rsp = Await.result(service(req), 1.second)
       assert(rsp.status == Status.Ok)
-      assert(rsp.contentType == Some(ct))
+      assert(rsp.contentType == Some(mt))
       assert(rsp.headerMap("ETag") == v1Stamp)
       assert(rsp.contentString == defaultDtabs("yeezus").show + "\n")
     }
@@ -204,6 +211,7 @@ class HttpControlServiceTest extends FunSuite with Awaits {
 
   val data = Map(
     MediaType.Json -> """[{"prefix":"/yeezy","dst":"/kanye"}]""",
+    MediaType.Json + ";charset=UTF-8" -> """[{"prefix":"/yeezy","dst":"/kanye"}]""",
     MediaType.Txt -> "/yeezy => /kanye",
     "application/dtab" -> "/yeezy => /kanye"
   )
@@ -218,8 +226,8 @@ class HttpControlServiceTest extends FunSuite with Awaits {
       val service = newService(store)
       val rsp = Await.result(service(req), 1.second)
       assert(rsp.status == Status.NoContent)
-      val result = Await.result(store.observe("graduation").values.toFuture())
-      assert(result.get.get.dtab == Dtab.read("/yeezy=>/kanye"))
+      val result = Await.result(store.observe("graduation").toFuture)
+      assert(result.get.dtab == Dtab.read("/yeezy=>/kanye"))
     }
 
   for ((ct, body) <- data) {
@@ -233,8 +241,8 @@ class HttpControlServiceTest extends FunSuite with Awaits {
       val service = newService(store)
       val rsp = Await.result(service(req), 1.second)
       assert(rsp.status == Status.NoContent)
-      val result = Await.result(store.observe("yeezus").values.toFuture())
-      assert(result.get.get.dtab == Dtab.read("/yeezy=>/kanye"))
+      val result = Await.result(store.observe("yeezus").toFuture)
+      assert(result.get.dtab == Dtab.read("/yeezy=>/kanye"))
     }
 
     test(s"PUT with valid stamp; $ct") {
@@ -248,8 +256,8 @@ class HttpControlServiceTest extends FunSuite with Awaits {
       val service = newService(store)
       val rsp = Await.result(service(req), 1.second)
       assert(rsp.status == Status.NoContent)
-      val result = Await.result(store.observe("yeezus").values.toFuture())
-      assert(result.get.get.dtab == Dtab.read("/yeezy=>/kanye"))
+      val result = Await.result(store.observe("yeezus").toFuture)
+      assert(result.get.dtab == Dtab.read("/yeezy=>/kanye"))
     }
 
     test(s"PUT with invalid stamp; $ct") {
@@ -263,8 +271,8 @@ class HttpControlServiceTest extends FunSuite with Awaits {
       val service = newService(store)
       val rsp = Await.result(service(req), 1.second)
       assert(rsp.status == Status.PreconditionFailed)
-      val result = Await.result(store.observe("yeezus").values.toFuture())
-      assert(result.get.get.dtab == Dtab.read("/yeezy=>/yeezus"))
+      val result = Await.result(store.observe("yeezus").toFuture)
+      assert(result.get.dtab == Dtab.read("/yeezy=>/yeezus"))
     }
   }
 
