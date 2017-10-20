@@ -9,6 +9,18 @@ import org.scalatest.FunSuite
 
 class CanaryAndServiceIdentifierTest extends FunSuite with Awaits with Exceptions {
 
+  test("simple 3-segment service hostname, simple version header") {
+    val identifier = CanaryAndServiceIdentifier(Path.Utf8("http"), false)
+    val req = Request()
+    req.uri = "/"
+    req.host = "locus.koalabait.com"
+    req.headerMap.set("x-cisco-spark-version-opts", "12345")
+    assert(
+      await(identifier(req)).asInstanceOf[IdentifiedRequest[Request]].dst ==
+        Dst.Path(Path.read("/http/1.1/12345/locus"))
+    )
+  }
+
   test("simple 3-segment service hostname, no canary header") {
     val identifier = CanaryAndServiceIdentifier(Path.Utf8("http"), false)
     val req = Request()

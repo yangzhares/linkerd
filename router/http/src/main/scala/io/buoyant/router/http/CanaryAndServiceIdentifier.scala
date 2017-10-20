@@ -28,7 +28,7 @@ case class CanaryAndServiceIdentifier(
   private[this] def mkPath(path: Path): Dst.Path =
     Dst.Path(prefix ++ path, baseDtab(), Dtab.local)
 
-  def parseOptionsHeaders(servicename: String, optionsheaders: String): String = {
+  def parseCanaryOptionsHeaders(servicename: String, optionsheaders: String): String = {
     val optionsarray = optionsheaders.split(",")
     for (optionsheader <- optionsarray) {
       if (optionsheader contains '=') {
@@ -48,6 +48,22 @@ case class CanaryAndServiceIdentifier(
     return "disabled"
   }
 
+  def parseVersionOptionsHeaders(servicename: String, optionsheaders: String): String = {
+    val optionsarray = optionsheaders.split(",")
+    for (optionsheader <- optionsarray) {
+      if (optionsheader contains '=') {
+        val optionsval = optionsheader.split("=")
+        if (servicename.equals(optionsval(0))) {
+          return optionsval(1)
+        }
+      }
+    }
+    if (!(optionsarray(0) contains '=')) {
+      return optionsarray(0)
+    }
+    return "disabled"
+  }
+
   def apply(req: Request): Future[RequestIdentification[Request]] = req.version match {
     case Version.Http10 =>
       val dst = mkPath(Path.Utf8("1.0", req.method.toString) ++ suffix(req))
@@ -60,8 +76,11 @@ case class CanaryAndServiceIdentifier(
             case 2 => if (host.split('.')(0) contains '-') host.split('.')(0).split('-').dropRight(1).mkString("-") else host.split('.')(0)
             case _ => host.split('.')(0)
           }
-          val optionsheaders = req.headerMap.getOrElse("x-cisco-spark-version-opts", req.headerMap.getOrElse("x-cisco-spark-canary-opts", "disabled"))
-          val tag = parseOptionsHeaders(servicename, optionsheaders)
+          val canaryOptionsheaders = req.headerMap.getOrElse("x-cisco-spark-canary-opts", "disabled")
+          val versionOptionsheaders = req.headerMap.getOrElse("x-cisco-spark-version-opts", "disabled")
+          val canaryTag = parseCanaryOptionsHeaders(servicename, canaryOptionsheaders)
+          val versionTag = parseVersionOptionsHeaders(servicename, versionOptionsheaders)
+          val tag = if (versionTag != "disabled") versionTag else canaryTag
           //System.err.format("computed canary tag: %s\n", tag)
           val dst = mkPath(Path.Utf8("1.1", tag, servicename) ++ suffix(req))
           //System.err.format("CanaryAndServiceIdentifier: returning path: %s\n\n", dst.toString)
